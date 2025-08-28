@@ -373,7 +373,6 @@ runs:
           exit \${exit_code:-0}
         "
       continue-on-error: true
-      timeout-minutes: ${{ fromJSON(inputs.timeout) }}
 
     - name: Run Playwright tests in container
       if: inputs.test-framework == 'playwright' 
@@ -445,8 +444,6 @@ runs:
           exit \${exit_code:-0}
         "
       continue-on-error: true
-      timeout-minutes: ${{ fromJSON(inputs.timeout) }}
-
     - name: Process test results
       shell: bash
       working-directory: ${{ inputs.working-directory }}
