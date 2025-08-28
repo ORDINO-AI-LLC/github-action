@@ -158,7 +158,7 @@ runs:
           ordino-${{ runner.os }}-${{ inputs.node-version }}-
 
     - name: Install dependencies
-      shell: bash
+      shell: sh
       working-directory: ${{ inputs.working-directory }}
       run: |
         if [[ -n "${{ inputs.install-command }}" ]]; then
@@ -169,101 +169,9 @@ runs:
           npm ci --legacy-peer-deps
         fi
 
-    - name: Detect and validate Playwright version
-      if: inputs.test-framework == 'playwright' 
-      shell: bash
-      working-directory: ${{ inputs.working-directory }}
-      run: |
-        echo "🔍 Detecting Playwright version..."
-        
-        # Function to get latest Playwright version from MCR
-        get_latest_playwright_version() {
-          echo "🌐 Fetching latest Playwright version from MCR..."
-          LATEST_VERSION=$(curl -s "https://mcr.microsoft.com/v2/playwright/tags/list" | \
-            jq -r '.tags[]' | \
-            grep -E "^v[0-9]+\.[0-9]+\.[0-9]+-jammy$" | \
-            sed 's/v\(.*\)-jammy/\1/' | \
-            sort -V | \
-            tail -1)
-          
-          if [[ -n "$LATEST_VERSION" ]]; then
-            echo "✅ Latest MCR version: $LATEST_VERSION"
-            echo "$LATEST_VERSION"
-          else
-            echo "⚠️ Could not fetch latest version, using fallback"
-            echo "1.52.0"
-          fi
-        }
-        
-        # Try to detect from package.json
-        DETECTED_VERSION=""
-        if [[ -f "package.json" ]]; then
-          DETECTED_VERSION=$(node -e "
-            try {
-              const pkg = require('./package.json');
-              const deps = {...(pkg.dependencies || {}), ...(pkg.devDependencies || {})};
-              const version = deps['@playwright/test'] || deps['playwright'];
-              if (version) {
-                // Clean version (remove ^ ~ >= < and other prefixes)
-                const cleaned = version.replace(/[\^~>=<\s]/g, '');
-                console.log(cleaned);
-              }
-            } catch(e) {
-              // Silent fail
-            }
-          " 2>/dev/null || echo "")
-        fi
-        
-        # Try package-lock.json as fallback
-        if [[ -z "$DETECTED_VERSION" && -f "package-lock.json" ]]; then
-          DETECTED_VERSION=$(node -e "
-            try {
-              const lockfile = require('./package-lock.json');
-              const packages = lockfile.packages || {};
-              for (const [name, info] of Object.entries(packages)) {
-                if (name.includes('@playwright/test') || name.includes('playwright')) {
-                  if (info.version) {
-                    console.log(info.version);
-                    break;
-                  }
-                }
-              }
-            } catch(e) {
-              // Silent fail
-            }
-          " 2>/dev/null || echo "")
-        fi
-        
-        # Determine final version
-        FINAL_VERSION="${{ inputs.playwright-version }}"
-        if [[ -z "$FINAL_VERSION" ]]; then
-          if [[ -n "$DETECTED_VERSION" && "$DETECTED_VERSION" != "latest" ]]; then
-            FINAL_VERSION="$DETECTED_VERSION"
-            echo "✅ Using detected version: $FINAL_VERSION"
-          else
-            FINAL_VERSION=$(get_latest_playwright_version)
-            echo "✅ Using latest MCR version: $FINAL_VERSION"
-          fi
-        else
-          echo "✅ Using provided version: $FINAL_VERSION"
-        fi
-        
-        # Validate version exists in MCR
-        if [[ "$FINAL_VERSION" != "latest" ]]; then
-          echo "🔍 Validating version $FINAL_VERSION exists in MCR..."
-          if curl -s -f "https://mcr.microsoft.com/v2/playwright/manifests/v${FINAL_VERSION}-jammy" > /dev/null; then
-            echo "✅ Version $FINAL_VERSION confirmed in MCR"
-          else
-            echo "⚠️ Version $FINAL_VERSION not found in MCR, using latest"
-            FINAL_VERSION=$(get_latest_playwright_version)
-          fi
-        fi
-        
-        echo "PLAYWRIGHT_VERSION=$FINAL_VERSION" >> $GITHUB_ENV
-        echo "🎭 Final Playwright version: $FINAL_VERSION"
 
     - name: Setup Docker images
-      shell: bash
+      shell: sh
       run: |
         echo "🐳 Setting up Docker images..."
         
@@ -303,7 +211,7 @@ runs:
         fi
 
     - name: Create report directory
-      shell: bash
+      shell: sh
       working-directory: ${{ inputs.working-directory }}
       run: |
         mkdir -p ordino-report/mochawesome
@@ -312,7 +220,7 @@ runs:
 
     - name: Run Cypress tests in container
       if: inputs.test-framework == 'cypress' 
-      shell: bash
+      shell: sh
       working-directory: ${{ inputs.working-directory }}
       env:
         ORDINO_KEY: ${{ inputs.ordino-key }}
@@ -376,7 +284,7 @@ runs:
 
     - name: Run Playwright tests in container
       if: inputs.test-framework == 'playwright' 
-      shell: bash
+      shell: sh
       working-directory: ${{ inputs.working-directory }}
       env:
         ORDINO_KEY: ${{ inputs.ordino-key }}
@@ -445,7 +353,7 @@ runs:
         "
       continue-on-error: true
     - name: Process test results
-      shell: bash
+      shell: sh
       working-directory: ${{ inputs.working-directory }}
       run: |
         echo "📊 Processing test results..."
@@ -524,7 +432,7 @@ runs:
 
     - name: Upload report to Ordino
       if: inputs.upload-reports == 'true' && always()
-      shell: bash
+      shell: sh
       working-directory: ${{ inputs.working-directory }}
       env:
         ORDINO_KEY: ${{ inputs.ordino-key }}
