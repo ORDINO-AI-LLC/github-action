@@ -58,10 +58,6 @@ inputs:
     required: false
     default: '1'
   
-  timeout:
-    description: 'Test timeout in minutes'
-    required: false
-    default: '30'
   
   # Browser Configuration (for Playwright)
   browsers:
