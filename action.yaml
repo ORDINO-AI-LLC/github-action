@@ -1,523 +1,339 @@
-name: 'Ordino Tests'
-description: 'Run Cypress and Playwright tests with Ordino reporting'
-author: 'Ordino AI'
-
+name: 'Ordino Test Runner'
+description: 'Run Ordino tests with Cypress or Playwright, with automatic sharding and report upload to Ordino dashboard'
+author: 'Ordino'
 branding:
   icon: 'check-circle'
   color: 'green'
 
 inputs:
-  # Test Configuration
+  # Test Framework Selection
   test-framework:
-    description: 'Test framework to use: cypress, playwright, or both'
+    description: 'Testing framework to use (cypress or playwright)'
+    required: true
+    default: 'cypress'
+  
+  # Common Inputs
+  node-version:
+    description: 'Node.js version to use'
     required: false
-    default: 'playwright'
+    default: '20'
+  
+  shards:
+    description: 'Number of parallel shards to run'
+    required: false
+    default: '2'
+  
+  initialize-command:
+    description: 'Command to initialize the project'
+    required: false
+    default: 'npm run initialize'
+  
+  test-command:
+    description: 'Command to run tests'
+    required: false
+    default: 'npm run oi:run:test'
+  
+  ordino-url:
+    description: 'Ordino API URL'
+    required: false
+    default: 'https://api.ordino.io'
   
   working-directory:
     description: 'Working directory for the tests'
     required: false
     default: '.'
   
-  install-command:
-    description: 'Custom install command (overrides default npm install)'
+  # Cypress Specific
+  cypress-browser-image:
+    description: 'Cypress browser image version (cypress only)'
     required: false
-    default: ''
+    default: 'cypress/browsers:node-20.17.0-chrome-128.0.6613.119-1-ff-130.0-edge-128.0.2739.63-1'
   
-  test-command:
-    description: 'Custom test command (overrides default test commands)'
+  config-file:
+    description: 'Cypress configuration file (cypress only)'
     required: false
-    default: ''
+    default: 'ordino.config.ts'
   
-  node-version:
-    description: 'Node.js version to use'
+  # Playwright Specific
+  playwright-image:
+    description: 'Playwright Docker image version (playwright only)'
     required: false
-    default: '20'
+    default: 'mcr.microsoft.com/playwright:v1.52.0-jammy'
   
-  # Ordino Configuration
+  # Credentials
   ordino-key:
-    description: 'Ordino API key for reporting'
-    required: true
+    description: 'Ordino API key (can also be set via ORDINO_KEY env or .env file)'
+    required: false
   
   project-id:
-    description: 'Ordino project ID'
-    required: true
-  
-  api-url:
-    description: 'Ordino API URL'
+    description: 'Project ID for Ordino (can also be set via PROJECT_ID env or .env file)'
     required: false
-    default: 'https://dev-portal.ordino.ai/api/v1/test-report-external'
   
-  # Test Execution Options
-  parallel:
-    description: 'Enable parallel test execution'
-    required: false
-    default: 'false'
-  
-  shard-count:
-    description: 'Number of shards for parallel execution'
-    required: false
-    default: '1'
-  
-  
-  # Browser Configuration (for Playwright)
-  browsers:
-    description: 'Browsers to test (chromium, firefox, webkit)'
-    required: false
-    default: 'chromium'
-  
-  headed:
-    description: 'Run tests in headed mode'
-    required: false
-    default: 'false'
-  
-  # Cypress Configuration
-  cypress-config-file:
-    description: 'Path to Cypress config file'
-    required: false
-    default: 'cypress.config.js'
-  
-  # Report Configuration
-  report-format:
-    description: 'Report format (mochawesome, junit, html)'
-    required: false
-    default: 'mochawesome'
-  
-  upload-reports:
-    description: 'Upload reports to Ordino'
+  use-env-file:
+    description: 'Use .env file for credentials if not provided'
     required: false
     default: 'true'
   
-  # Container Configuration
-  use-official-images:
-    description: 'Use official Docker images (playwright/cypress)'
+  # Control Options
+  skip-upload:
+    description: 'Skip uploading results to Ordino dashboard'
     required: false
-    default: 'true'
+    default: 'false'
   
-  playwright-version:
-    description: 'Playwright version to use (auto-detected if not specified)'
-    required: false
-    default: ''
-  
-  # Cache Configuration
-  cache:
-    description: 'Enable dependency caching'
+  continue-on-error:
+    description: 'Continue workflow even if tests fail'
     required: false
     default: 'true'
 
 outputs:
-  test-results:
-    description: 'Test execution results summary'
+  test-results-path:
+    description: 'Path to test results file'
+    value: ${{ steps.prepare-report.outputs.report-path }}
   
-  report-url:
-    description: 'URL to the uploaded test report'
+  tests-passed:
+    description: 'Whether all tests passed'
+    value: ${{ steps.run-tests.outputs.tests-passed }}
   
-  failed-tests:
-    description: 'Number of failed tests'
+  report-uploaded:
+    description: 'Whether the report was successfully uploaded'
+    value: ${{ steps.upload-report.outputs.success }}
   
-  total-tests:
-    description: 'Total number of tests executed'
+  ordino-dashboard-url:
+    description: 'URL to view results in Ordino dashboard'
+    value: ${{ steps.upload-report.outputs.dashboard-url }}
 
 runs:
-  using: 'composite'
+  using: "composite"
   steps:
-    - name: Validate inputs
+    # Step 1: Setup Environment
+    - name: Setup Environment
+      id: setup
       shell: bash
       run: |
-        if [[ "${{ inputs.test-framework }}" != "cypress" && "${{ inputs.test-framework }}" != "playwright" && "${{ inputs.test-framework }}" != "both" ]]; then
-          echo "❌ Error: test-framework must be 'cypress', 'playwright', or 'both'"
+        echo "🚀 Setting up Ordino Test Runner"
+        echo "Framework: ${{ inputs.test-framework }}"
+        echo "Shards: ${{ inputs.shards }}"
+        echo "Working Directory: ${{ inputs.working-directory }}"
+        
+        # Validate framework selection
+        if [[ "${{ inputs.test-framework }}" != "cypress" && "${{ inputs.test-framework }}" != "playwright" ]]; then
+          echo "❌ Error: test-framework must be either 'cypress' or 'playwright'"
           exit 1
+        fi
+    
+    # Step 2: Load Credentials
+    - name: Load Credentials
+      id: load-credentials
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        # Priority: Input parameters > Environment variables > .env file
+        ORDINO_KEY="${{ inputs.ordino-key }}"
+        PROJECT_ID="${{ inputs.project-id }}"
+        
+        # Try environment variables if inputs are empty
+        if [ -z "$ORDINO_KEY" ]; then
+          ORDINO_KEY="${ORDINO_KEY:-${{ env.ORDINO_KEY }}}"
+        fi
+        if [ -z "$PROJECT_ID" ]; then
+          PROJECT_ID="${PROJECT_ID:-${{ env.PROJECT_ID }}}"
         fi
         
-        if [[ -z "${{ inputs.ordino-key }}" ]]; then
-          echo "❌ Error: ordino-key is required"
-          exit 1
+        # Try .env file if still empty and use-env-file is true
+        if [[ "${{ inputs.use-env-file }}" == "true" ]] && [[ -z "$ORDINO_KEY" || -z "$PROJECT_ID" ]]; then
+          if [ -f ".env" ]; then
+            echo "📁 Loading credentials from .env file..."
+            # Export variables from .env
+            set -a
+            source .env
+            set +a
+          fi
         fi
         
-        if [[ -z "${{ inputs.project-id }}" ]]; then
-          echo "❌ Error: project-id is required"
+        # Mask and output credentials
+        if [ -n "$ORDINO_KEY" ]; then
+          echo "::add-mask::$ORDINO_KEY"
+          echo "ordino-key=$ORDINO_KEY" >> $GITHUB_OUTPUT
+          echo "✅ ORDINO_KEY loaded"
+        else
+          echo "⚠️ Warning: ORDINO_KEY not found"
+        fi
+        
+        if [ -n "$PROJECT_ID" ]; then
+          echo "::add-mask::$PROJECT_ID"
+          echo "project-id=$PROJECT_ID" >> $GITHUB_OUTPUT
+          echo "✅ PROJECT_ID loaded"
+        else
+          echo "⚠️ Warning: PROJECT_ID not found"
+        fi
+        
+        # Only fail if we're not skipping upload
+        if [[ "${{ inputs.skip-upload }}" == "false" ]] && [[ -z "$ORDINO_KEY" || -z "$PROJECT_ID" ]]; then
+          echo "❌ Error: ORDINO_KEY and PROJECT_ID are required for uploading results"
+          echo "Please provide them via:"
+          echo "  1. Action inputs (ordino-key, project-id)"
+          echo "  2. Environment variables (ORDINO_KEY, PROJECT_ID)"
+          echo "  3. .env file in your project"
           exit 1
         fi
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ inputs.node-version }}
-        cache: 'npm'
-        cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
-
-    - name: Cache dependencies
-      if: inputs.cache == 'true'
+    
+    # Step 3: Cache Dependencies
+    - name: Cache Dependencies
       uses: actions/cache@v4
       with:
         path: |
           ~/.npm
-          ~/.cache/ms-playwright
+          ~/.cache
           ${{ inputs.working-directory }}/node_modules
-        key: ordino-${{ runner.os }}-${{ inputs.node-version }}-${{ hashFiles(format('{0}/package-lock.json', inputs.working-directory)) }}
+        key: ordino-${{ inputs.test-framework }}-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
         restore-keys: |
-          ordino-${{ runner.os }}-${{ inputs.node-version }}-
-
-    - name: Install dependencies
-      shell: sh
+          ordino-${{ inputs.test-framework }}-${{ runner.os }}-
+    
+    # Step 4: Install Dependencies
+    - name: Install Dependencies
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        ORDINO_KEY: ${{ steps.load-credentials.outputs.ordino-key }}
+      run: |
+        echo "📦 Installing dependencies..."
+        ${{ inputs.initialize-command }} --legacy-peer-deps --omit=optional || ${{ inputs.initialize-command }}
+    
+    # Step 5: Run Tests
+    - name: Run Tests
+      id: run-tests
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        ORDINO_KEY: ${{ steps.load-credentials.outputs.ordino-key }}
+        TEST_FRAMEWORK: ${{ inputs.test-framework }}
+        SPLIT: ${{ inputs.shards }}
+        SPLIT_INDEX: '0'
+        SPLIT_INDEX_PLAYWRIGHT: '0'
+      run: |
+        echo "🧪 Running ${{ inputs.test-framework }} tests..."
+        
+        # Create report directory
+        mkdir -p ordino-report
+        
+        # Run tests based on framework
+        if [[ "${{ inputs.test-framework }}" == "cypress" ]]; then
+          # For Cypress
+          if command -v cypress &> /dev/null; then
+            ${{ inputs.test-command }} || TEST_FAILED=true
+          else
+            echo "Installing Cypress..."
+            npm install cypress --save-dev
+            ${{ inputs.test-command }} || TEST_FAILED=true
+          fi
+        else
+          # For Playwright
+          if command -v playwright &> /dev/null; then
+            ${{ inputs.test-command }} || TEST_FAILED=true
+          else
+            echo "Installing Playwright..."
+            npx playwright install
+            ${{ inputs.test-command }} || TEST_FAILED=true
+          fi
+        fi
+        
+        # Set output based on test results
+        if [ "$TEST_FAILED" = "true" ]; then
+          echo "tests-passed=false" >> $GITHUB_OUTPUT
+          if [[ "${{ inputs.continue-on-error }}" == "false" ]]; then
+            exit 1
+          fi
+        else
+          echo "tests-passed=true" >> $GITHUB_OUTPUT
+        fi
+    
+    # Step 6: Prepare Report
+    - name: Prepare Test Report
+      id: prepare-report
+      shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
-        if [[ -n "${{ inputs.install-command }}" ]]; then
-          echo "🔧 Running custom install command..."
-          ${{ inputs.install-command }}
-        else
-          echo "📦 Installing dependencies..."
-          npm ci --legacy-peer-deps
-        fi
-
-
-    - name: Setup Docker images
-      shell: sh
-      run: |
-        echo "🐳 Setting up Docker images..."
+        echo "📊 Preparing test report..."
         
-        # Setup Playwright Docker image
-        if [[ "${{ inputs.test-framework }}" == "playwright"  ]]; then
-          PLAYWRIGHT_VERSION="${{ env.PLAYWRIGHT_VERSION }}"
-          if [[ "$PLAYWRIGHT_VERSION" == "latest" ]]; then
-            PLAYWRIGHT_IMAGE="mcr.microsoft.com/playwright:latest-jammy"
+        if [[ "${{ inputs.test-framework }}" == "cypress" ]]; then
+          # Cypress report handling
+          if ls ordino-report/report/*.json 1> /dev/null 2>&1; then
+            echo "Merging Cypress reports..."
+            npx mochawesome-merge "ordino-report/report/*.json" > ordino-report/final-report.json
+            echo "report-path=ordino-report/final-report.json" >> $GITHUB_OUTPUT
           else
-            PLAYWRIGHT_IMAGE="mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-jammy"
+            echo "No Cypress reports found, creating empty report..."
+            echo '{"stats":{"suites":0,"tests":0,"passes":0,"pending":0,"failures":0},"results":[]}' > ordino-report/final-report.json
+            echo "report-path=ordino-report/final-report.json" >> $GITHUB_OUTPUT
           fi
-          echo "PLAYWRIGHT_DOCKER_IMAGE=$PLAYWRIGHT_IMAGE" >> $GITHUB_ENV
-          echo "🎭 Playwright Docker image: $PLAYWRIGHT_IMAGE"
+        else
+          # Playwright report handling
+          if [ -f "ordino-report/mochawesome/mochawesome.json" ]; then
+            cp ordino-report/mochawesome/mochawesome.json ordino-report/final-report.json
+            echo "report-path=ordino-report/final-report.json" >> $GITHUB_OUTPUT
+          else
+            echo "No Playwright report found, creating empty report..."
+            echo '{"stats":{"suites":0,"tests":0,"passes":0,"pending":0,"failures":0},"results":[]}' > ordino-report/final-report.json
+            echo "report-path=ordino-report/final-report.json" >> $GITHUB_OUTPUT
+          fi
+        fi
+    
+    # Step 7: Upload Report to Ordino
+    - name: Upload Report to Ordino
+      id: upload-report
+      if: ${{ inputs.skip-upload == 'false' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        echo "☁️ Uploading report to Ordino dashboard..."
+        
+        API_URL="${{ inputs.ordino-url }}/api/v1/test-report-external"
+        BUILD_ID="${GITHUB_RUN_ID}"
+        PROJECT_ID="${{ steps.load-credentials.outputs.project-id }}"
+        API_KEY="${{ steps.load-credentials.outputs.ordino-key }}"
+        REPORT_PATH="${{ steps.prepare-report.outputs.report-path }}"
+        
+        if [ ! -f "$REPORT_PATH" ]; then
+          echo "❌ Error: Report file not found at $REPORT_PATH"
+          echo "success=false" >> $GITHUB_OUTPUT
+          exit 1
         fi
         
-        # Setup Cypress Docker image
-        if [[ "${{ inputs.test-framework }}" == "cypress"  ]]; then
-          # Get latest Cypress version or use a stable one
-          CYPRESS_IMAGE="cypress/included:latest"
-          echo "CYPRESS_DOCKER_IMAGE=$CYPRESS_IMAGE" >> $GITHUB_ENV
-          echo "🌲 Cypress Docker image: $CYPRESS_IMAGE"
+        # Upload the report
+        response=$(curl --location "$API_URL" \
+          --header "Ordino-Key: $API_KEY" \
+          --form "file=@$REPORT_PATH" \
+          --form "ProjectId=$PROJECT_ID" \
+          --form "ExecutionId=$BUILD_ID" \
+          --write-out "%{http_code}" \
+          --silent \
+          --output response.json)
+        
+        if [ "$response" -eq 200 ] || [ "$response" -eq 201 ]; then
+          echo "✅ Report uploaded successfully!"
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "dashboard-url=${{ inputs.ordino-url }}/dashboard/project/$PROJECT_ID/execution/$BUILD_ID" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Failed to upload report. HTTP status: $response"
+          if [ -f response.json ]; then
+            cat response.json
+          fi
+          echo "success=false" >> $GITHUB_OUTPUT
+          if [[ "${{ inputs.continue-on-error }}" == "false" ]]; then
+            exit 1
+          fi
         fi
-
-    - name: Pull Docker images
+    
+    # Step 8: Summary
+    - name: Generate Summary
+      if: always()
       shell: bash
       run: |
-        echo "📥 Pulling required Docker images..."
-        
-        if [[ -n "${{ env.PLAYWRIGHT_DOCKER_IMAGE }}" ]]; then
-          echo "📥 Pulling Playwright image..."
-          docker pull ${{ env.PLAYWRIGHT_DOCKER_IMAGE }}
+        echo "## 📊 Ordino Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Framework**: ${{ inputs.test-framework }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Tests Passed**: ${{ steps.run-tests.outputs.tests-passed }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Report Uploaded**: ${{ steps.upload-report.outputs.success }}" >> $GITHUB_STEP_SUMMARY
+        if [[ "${{ steps.upload-report.outputs.dashboard-url }}" != "" ]]; then
+          echo "- **Dashboard**: [${{ steps.upload-report.outputs.dashboard-url }}](${{ steps.upload-report.outputs.dashboard-url }})" >> $GITHUB_STEP_SUMMARY
         fi
-        
-        if [[ -n "${{ env.CYPRESS_DOCKER_IMAGE }}" ]]; then
-          echo "📥 Pulling Cypress image..."
-          docker pull ${{ env.CYPRESS_DOCKER_IMAGE }}
-        fi
-
-    - name: Create report directory
-      shell: sh
-      working-directory: ${{ inputs.working-directory }}
-      run: |
-        mkdir -p ordino-report/mochawesome
-        mkdir -p ordino-report/screenshots
-        mkdir -p ordino-report/videos
-
-    - name: Run Cypress tests in container
-      if: inputs.test-framework == 'cypress' 
-      shell: sh
-      working-directory: ${{ inputs.working-directory }}
-      env:
-        ORDINO_KEY: ${{ inputs.ordino-key }}
-        PROJECT_ID: ${{ inputs.project-id }}
-      run: |
-        echo "🌲 Running Cypress tests in Docker container..."
-        
-        # Prepare Docker run command
-        DOCKER_CMD="docker run --rm"
-        
-        # Mount workspace
-        DOCKER_CMD="$DOCKER_CMD -v ${{ github.workspace }}:/workspace"
-        DOCKER_CMD="$DOCKER_CMD -w /workspace/${{ inputs.working-directory }}"
-        
-        # Pass environment variables
-        DOCKER_CMD="$DOCKER_CMD -e ORDINO_KEY=$ORDINO_KEY"
-        DOCKER_CMD="$DOCKER_CMD -e PROJECT_ID=$PROJECT_ID"
-        DOCKER_CMD="$DOCKER_CMD -e CI=true"
-        
-        # Use the Cypress Docker image
-        DOCKER_CMD="$DOCKER_CMD ${{ env.CYPRESS_DOCKER_IMAGE }}"
-        
-        # Determine test command
-        if [[ -n "${{ inputs.test-command }}" ]]; then
-          TEST_CMD="${{ inputs.test-command }}"
-        else
-          TEST_CMD="npx cypress run"
-          
-          # Add config file if specified
-          if [[ "${{ inputs.cypress-config-file }}" != "cypress.config.js" ]]; then
-            TEST_CMD="$TEST_CMD --config-file ${{ inputs.cypress-config-file }}"
-          fi
-          
-          # Add reporter configuration for Ordino
-          TEST_CMD="$TEST_CMD --reporter mochawesome --reporter-options reportDir=ordino-report/mochawesome,overwrite=false,html=false,json=true"
-          
-          # Add parallel execution if enabled
-          if [[ "${{ inputs.parallel }}" == "true" ]]; then
-            TEST_CMD="$TEST_CMD --parallel --record --key $ORDINO_KEY"
-          fi
-        fi
-        
-        # Execute in container
-        echo "🐳 Executing: $DOCKER_CMD bash -c \"$TEST_CMD\""
-        $DOCKER_CMD bash -c "
-          # Install dependencies if needed
-          if [ ! -d node_modules ]; then
-            echo '📦 Installing dependencies in container...'
-            npm ci --legacy-peer-deps || npm install --legacy-peer-deps
-          fi
-          
-          # Create report directories
-          mkdir -p ordino-report/mochawesome ordino-report/screenshots ordino-report/videos
-          
-          # Run the tests
-          $TEST_CMD || exit_code=\$?
-          
-          exit \${exit_code:-0}
-        "
-      continue-on-error: true
-
-    - name: Run Playwright tests in container
-      if: inputs.test-framework == 'playwright' 
-      shell: sh
-      working-directory: ${{ inputs.working-directory }}
-      env:
-        ORDINO_KEY: ${{ inputs.ordino-key }}
-        PROJECT_ID: ${{ inputs.project-id }}
-      run: |
-        echo "🎭 Running Playwright tests in Docker container..."
-        
-        # Prepare Docker run command
-        DOCKER_CMD="docker run --rm"
-        
-        # Mount workspace
-        DOCKER_CMD="$DOCKER_CMD -v ${{ github.workspace }}:/workspace"
-        DOCKER_CMD="$DOCKER_CMD -w /workspace/${{ inputs.working-directory }}"
-        
-        # Pass environment variables
-        DOCKER_CMD="$DOCKER_CMD -e ORDINO_KEY=$ORDINO_KEY"
-        DOCKER_CMD="$DOCKER_CMD -e PROJECT_ID=$PROJECT_ID"
-        DOCKER_CMD="$DOCKER_CMD -e CI=true"
-        
-        # Use the detected Playwright Docker image
-        DOCKER_CMD="$DOCKER_CMD ${{ env.PLAYWRIGHT_DOCKER_IMAGE }}"
-        
-        # Determine test command
-        if [[ -n "${{ inputs.test-command }}" ]]; then
-          TEST_CMD="${{ inputs.test-command }}"
-        else
-          TEST_CMD="npx playwright test"
-          
-          # Add reporter configuration - let Ordino handle the format
-          TEST_CMD="$TEST_CMD --reporter=json --output-dir=ordino-report"
-          
-          if [[ "${{ inputs.parallel }}" == "true" ]]; then
-            TEST_CMD="$TEST_CMD --workers=${{ inputs.shard-count }}"
-          fi
-          
-          if [[ "${{ inputs.headed }}" == "true" ]]; then
-            TEST_CMD="$TEST_CMD --headed"
-          fi
-          
-          # Add browser selection
-          if [[ "${{ inputs.browsers }}" != "chromium" ]]; then
-            # Convert comma-separated browsers to multiple --project flags
-            BROWSERS="${{ inputs.browsers }}"
-            for browser in ${BROWSERS//,/ }; do
-              TEST_CMD="$TEST_CMD --project=$browser"
-            done
-          fi
-        fi
-        
-        # Execute in container
-        echo "🐳 Executing: $DOCKER_CMD bash -c \"$TEST_CMD\""
-        $DOCKER_CMD bash -c "
-          # Install dependencies if needed
-          if [ ! -d node_modules ]; then
-            echo '📦 Installing dependencies in container...'
-            npm ci --legacy-peer-deps || npm install --legacy-peer-deps
-          fi
-          
-          # Create report directories
-          mkdir -p ordino-report/mochawesome ordino-report/screenshots ordino-report/videos
-          
-          # Run the tests
-          $TEST_CMD || exit_code=\$?
-          
-          exit \${exit_code:-0}
-        "
-      continue-on-error: true
-    - name: Process test results
-      shell: sh
-      working-directory: ${{ inputs.working-directory }}
-      run: |
-        echo "📊 Processing test results..."
-        
-        # Find any generated reports
-        REPORT_FILE=""
-        
-        # Check for mochawesome reports (Cypress)
-        if [[ -f "ordino-report/mochawesome/mochawesome.json" ]]; then
-          REPORT_FILE="ordino-report/mochawesome/mochawesome.json"
-          echo "✅ Found mochawesome report"
-        # Check for Playwright JSON reports
-        elif [[ -f "ordino-report/results.json" ]]; then
-          REPORT_FILE="ordino-report/results.json"
-          echo "✅ Found Playwright JSON report"
-        # Check for any JSON report in ordino-report directory
-        elif find ordino-report -name "*.json" -type f | head -1 | read -r found_file; then
-          REPORT_FILE="$found_file"
-          echo "✅ Found report: $REPORT_FILE"
-        fi
-        
-        if [[ -n "$REPORT_FILE" ]]; then
-          # Try to extract basic metrics for output
-          if command -v jq &> /dev/null; then
-            # For mochawesome format
-            if [[ "$REPORT_FILE" == *"mochawesome.json" ]]; then
-              TOTAL_TESTS=$(jq '.stats.tests // 0' "$REPORT_FILE" 2>/dev/null || echo "0")
-              FAILED_TESTS=$(jq '.stats.failures // 0' "$REPORT_FILE" 2>/dev/null || echo "0")
-              PASSED_TESTS=$(jq '.stats.passes // 0' "$REPORT_FILE" 2>/dev/null || echo "0")
-            else
-              # Generic JSON report - try to extract basic info
-              TOTAL_TESTS=$(jq '.stats.tests // (.suites | length) // 0' "$REPORT_FILE" 2>/dev/null || echo "0")
-              FAILED_TESTS=$(jq '.stats.failures // 0' "$REPORT_FILE" 2>/dev/null || echo "0")  
-              PASSED_TESTS=$(jq '.stats.passes // 0' "$REPORT_FILE" 2>/dev/null || echo "0")
-            fi
-          else
-            # Fallback without jq
-            TOTAL_TESTS="0"
-            FAILED_TESTS="0"
-            PASSED_TESTS="0"
-          fi
-          
-          echo "total-tests=$TOTAL_TESTS" >> $GITHUB_OUTPUT
-          echo "failed-tests=$FAILED_TESTS" >> $GITHUB_OUTPUT
-          echo "passed-tests=$PASSED_TESTS" >> $GITHUB_OUTPUT
-          
-          if [[ "$FAILED_TESTS" == "0" && "$TOTAL_TESTS" != "0" ]]; then
-            echo "test-results=passed" >> $GITHUB_OUTPUT
-          elif [[ "$TOTAL_TESTS" == "0" ]]; then
-            echo "test-results=no-results" >> $GITHUB_OUTPUT
-          else
-            echo "test-results=failed" >> $GITHUB_OUTPUT
-          fi
-          
-          echo "✅ Test Summary: $PASSED_TESTS passed, $FAILED_TESTS failed, $TOTAL_TESTS total"
-          echo "📄 Report file: $REPORT_FILE"
-        else
-          echo "⚠️ No test results found"
-          echo "test-results=no-results" >> $GITHUB_OUTPUT
-          echo "total-tests=0" >> $GITHUB_OUTPUT
-          echo "failed-tests=0" >> $GITHUB_OUTPUT
-          echo "passed-tests=0" >> $GITHUB_OUTPUT
-        fino-results" >> $GITHUB_OUTPUT
-        fi
-
-    - name: Upload test artifacts
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: ordino-test-results-${{ github.run_id }}
-        path: |
-          ${{ inputs.working-directory }}/ordino-report/
-          ${{ inputs.working-directory }}/test-results/
-          ${{ inputs.working-directory }}/playwright-report/
-        retention-days: 30
-
-    - name: Upload report to Ordino
-      if: inputs.upload-reports == 'true' && always()
-      shell: sh
-      working-directory: ${{ inputs.working-directory }}
-      env:
-        ORDINO_KEY: ${{ inputs.ordino-key }}
-        PROJECT_ID: ${{ inputs.project-id }}
-        API_URL: ${{ inputs.api-url }}
-      run: |
-        echo "📤 Uploading report to Ordino..."
-        
-        # Find the report file to upload
-        REPORT_FILE=""
-        
-        # Priority order: mochawesome.json, then any JSON in ordino-report
-        if [[ -f "ordino-report/mochawesome/mochawesome.json" ]]; then
-          REPORT_FILE="ordino-report/mochawesome/mochawesome.json"
-        elif [[ -f "ordino-report/results.json" ]]; then
-          REPORT_FILE="ordino-report/results.json"
-        elif find ordino-report -name "*.json" -type f | head -1 | read -r found_file; then
-          REPORT_FILE="$found_file"
-        fi
-        
-        if [[ -n "$REPORT_FILE" && -f "$REPORT_FILE" ]]; then
-          echo "📄 Uploading report file: $REPORT_FILE"
-          
-          RESPONSE=$(curl -s --location "$API_URL" \
-            --header "Ordino-Key: $ORDINO_KEY" \
-            --form "file=@$REPORT_FILE" \
-            --form "ProjectId=$PROJECT_ID" \
-            --form "ExecutionId=$GITHUB_RUN_ID" \
-            --form "Branch=$GITHUB_REF_NAME" \
-            --form "CommitSha=$GITHUB_SHA" \
-            --form "Framework=${{ inputs.test-framework }}" \
-            --form "BuildUrl=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID")
-          
-          echo "📊 Report uploaded successfully!"
-          
-          # Try to extract report URL from response
-          if command -v jq &> /dev/null; then
-            REPORT_URL=$(echo "$RESPONSE" | jq -r '.reportUrl // .url // empty' 2>/dev/null || echo "")
-          else
-            REPORT_URL=""
-          fi
-          
-          if [[ -n "$REPORT_URL" ]]; then
-            echo "report-url=$REPORT_URL" >> $GITHUB_OUTPUT
-            echo "🔗 View report: $REPORT_URL"
-          fi
-        else
-          echo "⚠️ No report file found to upload"
-          echo "📂 Contents of ordino-report directory:"
-          find ordino-report -type f 2>/dev/null || echo "Directory not found"
-        fi
-
-    - name: Comment on PR
-      if: github.event_name == 'pull_request' && inputs.upload-reports == 'true'
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const testResults = '${{ steps.process-test-results.outputs.test-results }}';
-          const totalTests = '${{ steps.process-test-results.outputs.total-tests }}';
-          const failedTests = '${{ steps.process-test-results.outputs.failed-tests }}';
-          const reportUrl = '${{ steps.upload-report.outputs.report-url }}';
-          
-          let emoji = testResults === 'passed' ? '✅' : '❌';
-          let status = testResults === 'passed' ? 'All tests passed!' : `${failedTests} test(s) failed`;
-          
-          let body = `## ${emoji} Ordino Test Results
-          
-          **Status:** ${status}
-          **Total Tests:** ${totalTests}
-          **Framework:** ${{ inputs.test-framework }}
-          
-          ${reportUrl ? `[📊 View detailed report](${reportUrl})` : ''}
-          
-          <details>
-          <summary>Test Execution Details</summary>
-          
-          - **Commit:** ${context.sha.substring(0, 7)}
-          - **Workflow:** ${context.workflow}
-          - **Run ID:** ${context.runId}
-          
-          </details>`;
-          
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: body
-          });
