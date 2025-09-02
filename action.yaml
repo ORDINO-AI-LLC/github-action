@@ -60,6 +60,11 @@ inputs:
     required: false
     default: 'mcr.microsoft.com/playwright:v1.52.0-jammy'
   
+  install-playwright-browsers:
+    description: 'Install Playwright browsers'
+    required: false
+    default: 'true'
+  
   # Credentials
   ordino-key:
     description: 'Ordino API key (can also be set via ORDINO_KEY env or .env file)'
@@ -105,6 +110,37 @@ outputs:
 runs:
   using: "composite"
   steps:
+    # Step 0: Install Required Tools (for Alpine containers)
+    - name: Setup Container Environment
+      shell: sh
+      run: |
+        echo "🔧 Setting up container environment..."
+        
+        # Detect if we're in Alpine Linux
+        if [ -f /etc/alpine-release ]; then
+          echo "Detected Alpine Linux container"
+          # Check if bash is installed
+          if ! command -v bash >/dev/null 2>&1; then
+            echo "Installing bash..."
+            apk add --no-cache bash
+          fi
+          # Check if curl is installed
+          if ! command -v curl >/dev/null 2>&1; then
+            echo "Installing curl..."
+            apk add --no-cache curl
+          fi
+        fi
+        
+        # Detect if we're in Debian/Ubuntu
+        if [ -f /etc/debian_version ]; then
+          echo "Detected Debian/Ubuntu container"
+          # Check if curl is installed
+          if ! command -v curl >/dev/null 2>&1; then
+            echo "Installing curl..."
+            apt-get update && apt-get install -y curl
+          fi
+        fi
+    
     # Step 1: Setup Environment
     - name: Setup Environment
       id: setup
@@ -197,7 +233,39 @@ runs:
         ORDINO_KEY: ${{ steps.load-credentials.outputs.ordino-key }}
       run: |
         echo "📦 Installing dependencies..."
-        ${{ inputs.initialize-command }} --legacy-peer-deps --omit=optional || ${{ inputs.initialize-command }}
+        
+        # Try the initialize command first
+        if ! ${{ inputs.initialize-command }} --legacy-peer-deps --omit=optional; then
+          echo "Initialize command failed, trying without flags..."
+          ${{ inputs.initialize-command }}
+        fi
+        
+        # Install Playwright browsers if needed
+        if [[ "${{ inputs.test-framework }}" == "playwright" ]] && [[ "${{ inputs.install-playwright-browsers }}" == "true" ]]; then
+          echo "🎭 Installing Playwright browsers..."
+          # Check if we're in a container that supports browser installation
+          if [ -f /etc/alpine-release ]; then
+            echo "⚠️ Warning: Alpine Linux detected. Installing additional dependencies for Playwright..."
+            apk add --no-cache \
+              chromium \
+              nss \
+              freetype \
+              freetype-dev \
+              harfbuzz \
+              ca-certificates \
+              ttf-freefont \
+              nodejs \
+              npm
+          fi
+          
+          # Install Playwright and browsers
+          if command -v npx &> /dev/null; then
+            npx playwright install chromium || true
+            npx playwright install-deps chromium || true
+          else
+            echo "⚠️ Warning: npx not found, skipping Playwright browser installation"
+          fi
+        fi
     
     # Step 5: Run Tests
     - name: Run Tests
@@ -216,35 +284,44 @@ runs:
         # Create report directory
         mkdir -p ordino-report
         
+        # Set test exit code variable
+        TEST_EXIT_CODE=0
+        
         # Run tests based on framework
         if [[ "${{ inputs.test-framework }}" == "cypress" ]]; then
-          # For Cypress
-          if command -v cypress &> /dev/null; then
-            ${{ inputs.test-command }} || TEST_FAILED=true
+          echo "Running Cypress tests..."
+          # Create subdirectories for Cypress
+          mkdir -p ordino-report/report
+          
+          # Run the test command
+          if ${{ inputs.test-command }}; then
+            echo "✅ Tests completed successfully"
           else
-            echo "Installing Cypress..."
-            npm install cypress --save-dev
-            ${{ inputs.test-command }} || TEST_FAILED=true
+            TEST_EXIT_CODE=$?
+            echo "⚠️ Tests completed with exit code: $TEST_EXIT_CODE"
           fi
         else
-          # For Playwright
-          if command -v playwright &> /dev/null; then
-            ${{ inputs.test-command }} || TEST_FAILED=true
+          echo "Running Playwright tests..."
+          # Create subdirectories for Playwright
+          mkdir -p ordino-report/mochawesome
+          
+          # Run the test command
+          if ${{ inputs.test-command }}; then
+            echo "✅ Tests completed successfully"
           else
-            echo "Installing Playwright..."
-            npx playwright install
-            ${{ inputs.test-command }} || TEST_FAILED=true
+            TEST_EXIT_CODE=$?
+            echo "⚠️ Tests completed with exit code: $TEST_EXIT_CODE"
           fi
         fi
         
         # Set output based on test results
-        if [ "$TEST_FAILED" = "true" ]; then
+        if [ $TEST_EXIT_CODE -eq 0 ]; then
+          echo "tests-passed=true" >> $GITHUB_OUTPUT
+        else
           echo "tests-passed=false" >> $GITHUB_OUTPUT
           if [[ "${{ inputs.continue-on-error }}" == "false" ]]; then
-            exit 1
+            exit $TEST_EXIT_CODE
           fi
-        else
-          echo "tests-passed=true" >> $GITHUB_OUTPUT
         fi
     
     # Step 6: Prepare Report
@@ -259,7 +336,16 @@ runs:
           # Cypress report handling
           if ls ordino-report/report/*.json 1> /dev/null 2>&1; then
             echo "Merging Cypress reports..."
-            npx mochawesome-merge "ordino-report/report/*.json" > ordino-report/final-report.json
+            # Check if mochawesome-merge is available
+            if command -v npx &> /dev/null; then
+              npx mochawesome-merge "ordino-report/report/*.json" > ordino-report/final-report.json || {
+                echo "Failed to merge reports, using first report..."
+                cp ordino-report/report/*.json ordino-report/final-report.json
+              }
+            else
+              echo "npx not available, using first report file..."
+              cp ordino-report/report/*.json ordino-report/final-report.json
+            fi
             echo "report-path=ordino-report/final-report.json" >> $GITHUB_OUTPUT
           else
             echo "No Cypress reports found, creating empty report..."
@@ -270,6 +356,9 @@ runs:
           # Playwright report handling
           if [ -f "ordino-report/mochawesome/mochawesome.json" ]; then
             cp ordino-report/mochawesome/mochawesome.json ordino-report/final-report.json
+            echo "report-path=ordino-report/final-report.json" >> $GITHUB_OUTPUT
+          elif [ -f "ordino-report/mochawesome.json" ]; then
+            cp ordino-report/mochawesome.json ordino-report/final-report.json
             echo "report-path=ordino-report/final-report.json" >> $GITHUB_OUTPUT
           else
             echo "No Playwright report found, creating empty report..."
