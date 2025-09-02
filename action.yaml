@@ -36,7 +36,7 @@ inputs:
   ordino-url:
     description: 'Ordino API URL'
     required: false
-    default: 'https://api.ordino.io'
+    default: 'https://dev-portal.ordino.ai'
   
   working-directory:
     description: 'Working directory for the tests'
