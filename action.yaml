@@ -1,6 +1,6 @@
 name: 'Ordino Test Runner'
 description: 'Run Ordino tests with Cypress or Playwright, with automatic sharding and report upload to Ordino dashboard'
-author: 'Ordino'
+author: 'Ordino AI LLC'
 branding:
   icon: 'check-circle'
   color: 'green'
@@ -12,27 +12,35 @@ inputs:
     required: true
     default: 'cypress'
   
-  # Common Inputs
-  node-version:
-    description: 'Node.js version to use'
+  # Action Mode
+  action-mode:
+    description: 'Action mode: test (run tests) or merge-and-upload (merge reports and upload)'
     required: false
-    default: '20'
+    default: 'test'
   
-  shards:
-    description: 'Number of parallel shards to run'
+  # Sharding Configuration
+  total-shards:
+    description: 'Total number of parallel shards'
     required: false
-    default: '2'
+    default: '1'
   
+  shard-index:
+    description: 'Current shard index (1-based for Playwright compatibility)'
+    required: false
+    default: '1'
+  
+  # Commands
   initialize-command:
     description: 'Command to initialize the project'
     required: false
     default: 'npm run initialize'
   
   test-command:
-    description: 'Command to run tests'
+    description: 'Command to run tests (without shard arguments)'
     required: false
     default: 'npm run oi:run:test'
   
+  # Configuration
   ordino-url:
     description: 'Ordino API URL'
     required: false
@@ -43,22 +51,10 @@ inputs:
     required: false
     default: '.'
   
-  # Cypress Specific
-  cypress-browser-image:
-    description: 'Cypress browser image version (cypress only)'
-    required: false
-    default: 'cypress/browsers:node-20.17.0-chrome-128.0.6613.119-1-ff-130.0-edge-128.0.2739.63-1'
-  
   config-file:
     description: 'Cypress configuration file (cypress only)'
     required: false
     default: 'ordino.config.ts'
-  
-  # Playwright Specific
-  playwright-image:
-    description: 'Playwright Docker image version (playwright only)'
-    required: false
-    default: 'mcr.microsoft.com/playwright:v1.52.0-jammy'
   
   install-playwright-browsers:
     description: 'Install Playwright browsers'
@@ -89,6 +85,12 @@ inputs:
     description: 'Continue workflow even if tests fail'
     required: false
     default: 'true'
+  
+  # For merge-and-upload mode
+  reports-directory:
+    description: 'Directory containing downloaded shard reports (for merge-and-upload mode)'
+    required: false
+    default: 'all-reports'
 
 outputs:
   test-results-path:
@@ -110,7 +112,7 @@ outputs:
 runs:
   using: "composite"
   steps:
-    # Step 0: Install Required Tools (for Alpine containers)
+    # Step 0: Install Required Tools
     - name: Setup Container Environment
       shell: sh
       run: |
@@ -119,22 +121,23 @@ runs:
         # Detect if we're in Alpine Linux
         if [ -f /etc/alpine-release ]; then
           echo "Detected Alpine Linux container"
-          # Check if bash is installed
           if ! command -v bash >/dev/null 2>&1; then
             echo "Installing bash..."
             apk add --no-cache bash
           fi
-          # Check if curl is installed
           if ! command -v curl >/dev/null 2>&1; then
             echo "Installing curl..."
             apk add --no-cache curl
+          fi
+          if ! command -v node >/dev/null 2>&1; then
+            echo "Installing Node.js..."
+            apk add --no-cache nodejs npm
           fi
         fi
         
         # Detect if we're in Debian/Ubuntu
         if [ -f /etc/debian_version ]; then
           echo "Detected Debian/Ubuntu container"
-          # Check if curl is installed
           if ! command -v curl >/dev/null 2>&1; then
             echo "Installing curl..."
             apt-get update && apt-get install -y curl
@@ -147,13 +150,21 @@ runs:
       shell: bash
       run: |
         echo "🚀 Setting up Ordino Test Runner"
+        echo "Mode: ${{ inputs.action-mode }}"
         echo "Framework: ${{ inputs.test-framework }}"
-        echo "Shards: ${{ inputs.shards }}"
+        echo "Total Shards: ${{ inputs.total-shards }}"
+        echo "Current Shard: ${{ inputs.shard-index }}"
         echo "Working Directory: ${{ inputs.working-directory }}"
         
         # Validate framework selection
         if [[ "${{ inputs.test-framework }}" != "cypress" && "${{ inputs.test-framework }}" != "playwright" ]]; then
           echo "❌ Error: test-framework must be either 'cypress' or 'playwright'"
+          exit 1
+        fi
+        
+        # Validate action mode
+        if [[ "${{ inputs.action-mode }}" != "test" && "${{ inputs.action-mode }}" != "merge-and-upload" ]]; then
+          echo "❌ Error: action-mode must be either 'test' or 'merge-and-upload'"
           exit 1
         fi
     
@@ -179,9 +190,13 @@ runs:
         if [[ "${{ inputs.use-env-file }}" == "true" ]] && [[ -z "$ORDINO_KEY" || -z "$PROJECT_ID" ]]; then
           if [ -f ".env" ]; then
             echo "📁 Loading credentials from .env file..."
-            # Export variables from .env
             set -a
             source .env
+            set +a
+          elif [ -f "/root/.env" ]; then
+            echo "📁 Loading credentials from /root/.env file..."
+            set -a
+            source /root/.env
             set +a
           fi
         fi
@@ -213,8 +228,9 @@ runs:
           exit 1
         fi
     
-    # Step 3: Cache Dependencies
+    # Step 3: Cache Dependencies (only for test mode)
     - name: Cache Dependencies
+      if: ${{ inputs.action-mode == 'test' }}
       uses: actions/cache@v4
       with:
         path: |
@@ -225,8 +241,9 @@ runs:
         restore-keys: |
           ordino-${{ inputs.test-framework }}-${{ runner.os }}-
     
-    # Step 4: Install Dependencies
+    # Step 4: Install Dependencies (only for test mode)
     - name: Install Dependencies
+      if: ${{ inputs.action-mode == 'test' }}
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -234,7 +251,10 @@ runs:
       run: |
         echo "📦 Installing dependencies..."
         
-        # Try the initialize command first
+        # Configure npm cache
+        npm config set cache ~/.npm --global
+        
+        # Try the initialize command
         if ! ${{ inputs.initialize-command }} --legacy-peer-deps --omit=optional; then
           echo "Initialize command failed, trying without flags..."
           ${{ inputs.initialize-command }}
@@ -243,41 +263,26 @@ runs:
         # Install Playwright browsers if needed
         if [[ "${{ inputs.test-framework }}" == "playwright" ]] && [[ "${{ inputs.install-playwright-browsers }}" == "true" ]]; then
           echo "🎭 Installing Playwright browsers..."
-          # Check if we're in a container that supports browser installation
           if [ -f /etc/alpine-release ]; then
-            echo "⚠️ Warning: Alpine Linux detected. Installing additional dependencies for Playwright..."
-            apk add --no-cache \
-              chromium \
-              nss \
-              freetype \
-              freetype-dev \
-              harfbuzz \
-              ca-certificates \
-              ttf-freefont \
-              nodejs \
-              npm
+            echo "⚠️ Warning: Alpine Linux detected. Installing additional dependencies..."
+            apk add --no-cache chromium nss freetype freetype-dev harfbuzz ca-certificates ttf-freefont
           fi
           
-          # Install Playwright and browsers
           if command -v npx &> /dev/null; then
             npx playwright install chromium || true
             npx playwright install-deps chromium || true
-          else
-            echo "⚠️ Warning: npx not found, skipping Playwright browser installation"
           fi
         fi
     
-    # Step 5: Run Tests
+    # Step 5: Run Tests (only for test mode)
     - name: Run Tests
       id: run-tests
+      if: ${{ inputs.action-mode == 'test' }}
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
         ORDINO_KEY: ${{ steps.load-credentials.outputs.ordino-key }}
         TEST_FRAMEWORK: ${{ inputs.test-framework }}
-        SPLIT: ${{ inputs.shards }}
-        SPLIT_INDEX: '0'
-        SPLIT_INDEX_PLAYWRIGHT: '0'
       run: |
         echo "🧪 Running ${{ inputs.test-framework }} tests..."
         
@@ -290,10 +295,16 @@ runs:
         # Run tests based on framework
         if [[ "${{ inputs.test-framework }}" == "cypress" ]]; then
           echo "Running Cypress tests..."
-          # Create subdirectories for Cypress
           mkdir -p ordino-report/report
           
-          # Run the test command
+          # Run with Cypress sharding if needed
+          if [[ "${{ inputs.total-shards }}" -gt "1" ]]; then
+            CYPRESS_SHARD_INDEX=$(({{ inputs.shard-index }} - 1))
+            export SPLIT="${{ inputs.total-shards }}"
+            export SPLIT_INDEX="$CYPRESS_SHARD_INDEX"
+            echo "Running with SPLIT=$SPLIT SPLIT_INDEX=$SPLIT_INDEX"
+          fi
+          
           if ${{ inputs.test-command }}; then
             echo "✅ Tests completed successfully"
           else
@@ -302,15 +313,28 @@ runs:
           fi
         else
           echo "Running Playwright tests..."
-          # Create subdirectories for Playwright
           mkdir -p ordino-report/mochawesome
           
-          # Run the test command
-          if ${{ inputs.test-command }}; then
-            echo "✅ Tests completed successfully"
+          # Run with Playwright sharding if needed
+          if [[ "${{ inputs.total-shards }}" -gt "1" ]]; then
+            echo "Running shard ${{ inputs.shard-index }} of ${{ inputs.total-shards }}"
+            TEST_CMD="${{ inputs.test-command }} -- --shard=${{ inputs.shard-index }}/${{ inputs.total-shards }}"
+            echo "Running command: $TEST_CMD"
+            
+            if eval "$TEST_CMD"; then
+              echo "✅ Tests completed successfully"
+            else
+              TEST_EXIT_CODE=$?
+              echo "⚠️ Tests completed with exit code: $TEST_EXIT_CODE"
+            fi
           else
-            TEST_EXIT_CODE=$?
-            echo "⚠️ Tests completed with exit code: $TEST_EXIT_CODE"
+            # No sharding
+            if ${{ inputs.test-command }}; then
+              echo "✅ Tests completed successfully"
+            else
+              TEST_EXIT_CODE=$?
+              echo "⚠️ Tests completed with exit code: $TEST_EXIT_CODE"
+            fi
           fi
         fi
         
@@ -324,9 +348,10 @@ runs:
           fi
         fi
     
-    # Step 6: Prepare Report
+    # Step 6: Prepare Report (handles both single and parallel execution)
     - name: Prepare Test Report
       id: prepare-report
+      if: ${{ inputs.action-mode == 'test' }}
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
@@ -335,15 +360,13 @@ runs:
         if [[ "${{ inputs.test-framework }}" == "cypress" ]]; then
           # Cypress report handling
           if ls ordino-report/report/*.json 1> /dev/null 2>&1; then
-            echo "Merging Cypress reports..."
-            # Check if mochawesome-merge is available
+            # For Cypress, always merge if multiple files exist
             if command -v npx &> /dev/null; then
               npx mochawesome-merge "ordino-report/report/*.json" > ordino-report/final-report.json || {
-                echo "Failed to merge reports, using first report..."
+                echo "Failed to merge, using first report..."
                 cp ordino-report/report/*.json ordino-report/final-report.json
               }
             else
-              echo "npx not available, using first report file..."
               cp ordino-report/report/*.json ordino-report/final-report.json
             fi
             echo "report-path=ordino-report/final-report.json" >> $GITHUB_OUTPUT
@@ -357,9 +380,6 @@ runs:
           if [ -f "ordino-report/mochawesome/mochawesome.json" ]; then
             cp ordino-report/mochawesome/mochawesome.json ordino-report/final-report.json
             echo "report-path=ordino-report/final-report.json" >> $GITHUB_OUTPUT
-          elif [ -f "ordino-report/mochawesome.json" ]; then
-            cp ordino-report/mochawesome.json ordino-report/final-report.json
-            echo "report-path=ordino-report/final-report.json" >> $GITHUB_OUTPUT
           else
             echo "No Playwright report found, creating empty report..."
             echo '{"stats":{"suites":0,"tests":0,"passes":0,"pending":0,"failures":0},"results":[]}' > ordino-report/final-report.json
@@ -367,7 +387,74 @@ runs:
           fi
         fi
     
-    # Step 7: Upload Report to Ordino
+    # Step 7: Merge Reports (for merge-and-upload mode - handles downloaded artifacts)
+    - name: Merge Parallel Reports
+      id: merge-reports
+      if: ${{ inputs.action-mode == 'merge-and-upload' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        echo "📊 Merging reports from parallel execution..."
+        
+        if [[ "${{ inputs.test-framework }}" == "cypress" ]]; then
+          # Cypress: Use mochawesome-merge
+          echo "Merging Cypress reports..."
+          mkdir -p ordino-report/report
+          
+          # Copy all Cypress reports from downloaded artifacts
+          for report_dir in ${{ inputs.reports-directory }}/*/; do
+            if [ -d "$report_dir/ordino-report/report" ]; then
+              cp "$report_dir"/ordino-report/report/*.json ordino-report/report/ 2>/dev/null || true
+            fi
+          done
+          
+          # Merge using mochawesome-merge
+          if ls ordino-report/report/*.json 1> /dev/null 2>&1; then
+            npx mochawesome-merge "ordino-report/report/*.json" > ordino-report/final-report.json
+            echo "✅ Successfully merged Cypress reports"
+            echo "report-path=ordino-report/final-report.json" >> $GITHUB_OUTPUT
+          else
+            echo "❌ No Cypress reports found to merge"
+            exit 1
+          fi
+        else
+          # Playwright: Use the existing merge-reports.js from the framework
+          echo "Merging Playwright reports..."
+          mkdir -p ordino-report/mochawesome
+          
+          # Find and copy all mochawesome.json files
+          shard_count=0
+          for mochawesome_file in $(find ${{ inputs.reports-directory }} -name "mochawesome.json" -type f); do
+            shard_count=$((shard_count + 1))
+            cp "$mochawesome_file" "ordino-report/mochawesome/mochawesome-shard-$shard_count.json"
+            echo "✅ Copied report from shard $shard_count"
+          done
+          
+          if [ $shard_count -gt 0 ]; then
+            echo "🔄 Using merge-reports.js to merge $shard_count reports..."
+            
+            if [ -f "merge-reports.js" ]; then
+              node merge-reports.js
+            else
+              echo "❌ Error: merge-reports.js not found in repository!"
+              echo "Please ensure merge-reports.js is present in your repository root"
+              exit 1
+            fi
+            
+            if [ -f "ordino-report/mochawesome/mochawesome.json" ]; then
+              echo "✅ Successfully merged $shard_count reports"
+              echo "report-path=ordino-report/mochawesome/mochawesome.json" >> $GITHUB_OUTPUT
+            else
+              echo "❌ Failed to merge reports"
+              exit 1
+            fi
+          else
+            echo "❌ No mochawesome.json files found for merge"
+            exit 1
+          fi
+        fi
+    
+    # Step 8: Upload Report to Ordino (unified for all scenarios)
     - name: Upload Report to Ordino
       id: upload-report
       if: ${{ inputs.skip-upload == 'false' }}
@@ -380,49 +467,23 @@ runs:
         BUILD_ID="${GITHUB_RUN_ID}"
         PROJECT_ID="${{ steps.load-credentials.outputs.project-id }}"
         API_KEY="${{ steps.load-credentials.outputs.ordino-key }}"
-        REPORT_PATH="${{ steps.prepare-report.outputs.report-path }}"
         
-        if [ ! -f "$REPORT_PATH" ]; then
-          echo "❌ Error: Report file not found at $REPORT_PATH"
-          echo "success=false" >> $GITHUB_OUTPUT
-          exit 1
+        # Determine which report to upload
+        if [[ "${{ inputs.action-mode }}" == "merge-and-upload" ]]; then
+          REPORT_PATH="${{ steps.merge-reports.outputs.report-path }}"
+        else
+          REPORT_PATH="${{ steps.prepare-report.outputs.report-path }}"
         fi
         
-        # Upload the report
-        response=$(curl --location "$API_URL" \
-          --header "Ordino-Key: $API_KEY" \
-          --form "file=@$REPORT_PATH" \
-          --form "ProjectId=$PROJECT_ID" \
-          --form "ExecutionId=$BUILD_ID" \
-          --write-out "%{http_code}" \
-          --silent \
-          --output response.json)
-        
-        if [ "$response" -eq 200 ] || [ "$response" -eq 201 ]; then
-          echo "✅ Report uploaded successfully!"
-          echo "success=true" >> $GITHUB_OUTPUT
-          echo "dashboard-url=${{ inputs.ordino-url }}/dashboard/project/$PROJECT_ID/execution/$BUILD_ID" >> $GITHUB_OUTPUT
-        else
-          echo "❌ Failed to upload report. HTTP status: $response"
-          if [ -f response.json ]; then
-            cat response.json
-          fi
-          echo "success=false" >> $GITHUB_OUTPUT
-          if [[ "${{ inputs.continue-on-error }}" == "false" ]]; then
+        # Fallback if path not set
+        if [ -z "$REPORT_PATH" ] || [ ! -f "$REPORT_PATH" ]; then
+          if [ -f "ordino-report/final-report.json" ]; then
+            REPORT_PATH="ordino-report/final-report.json"
+          elif [ -f "ordino-report/mochawesome/mochawesome.json" ]; then
+            REPORT_PATH="ordino-report/mochawesome/mochawesome.json"
+          else
+            echo "❌ Error: No report file found to upload"
+            echo "success=false" >> $GITHUB_OUTPUT
             exit 1
           fi
-        fi
-    
-    # Step 8: Summary
-    - name: Generate Summary
-      if: always()
-      shell: bash
-      run: |
-        echo "## 📊 Ordino Test Results" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "- **Framework**: ${{ inputs.test-framework }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Tests Passed**: ${{ steps.run-tests.outputs.tests-passed }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Report Uploaded**: ${{ steps.upload-report.outputs.success }}" >> $GITHUB_STEP_SUMMARY
-        if [[ "${{ steps.upload-report.outputs.dashboard-url }}" != "" ]]; then
-          echo "- **Dashboard**: [${{ steps.upload-report.outputs.dashboard-url }}](${{ steps.upload-report.outputs.dashboard-url }})" >> $GITHUB_STEP_SUMMARY
         fi
