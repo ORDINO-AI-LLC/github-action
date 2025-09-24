@@ -286,7 +286,7 @@ runs:
           
           # Run with Cypress sharding if needed
           if [[ "${{ inputs.total-shards }}" -gt "1" ]]; then
-            CYPRESS_SHARD_INDEX=$(({{ inputs.shard-index }} - 1))
+            CYPRESS_SHARD_INDEX=$((${{ inputs.shard-index }} - 1))
             export SPLIT="${{ inputs.total-shards }}"
             export SPLIT_INDEX="$CYPRESS_SHARD_INDEX"
             echo "Running with SPLIT=$SPLIT SPLIT_INDEX=$SPLIT_INDEX"
