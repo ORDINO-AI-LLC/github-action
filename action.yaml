@@ -490,7 +490,127 @@ runs:
             exit 1
           fi
         fi
-    
+# Step 9: Upload Trace Files (for Playwright only)
+    - name: Upload Playwright Trace Files
+      id: upload-traces
+      if: ${{ inputs.test-framework == 'playwright' && inputs.skip-upload == 'false' && (inputs.action-mode == 'merge-and-upload' || inputs.total-shards == '1') }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        echo "📤 Checking for Playwright trace files..."
+        
+        # Find trace files
+        TRACE_DIR="test-results"
+        if [ ! -d "$TRACE_DIR" ]; then
+          TRACE_DIR="playwright-report"
+        fi
+        
+        if [ ! -d "$TRACE_DIR" ]; then
+          echo "No trace directory found, skipping trace upload"
+          exit 0
+        fi
+        
+        # Find all trace.zip files
+        TRACE_FILES=$(find "$TRACE_DIR" -name "trace.zip" -type f 2>/dev/null || true)
+        
+        if [ -z "$TRACE_FILES" ]; then
+          echo "No trace files found, skipping trace upload"
+          exit 0
+        fi
+        
+        # Count trace files
+        TRACE_COUNT=$(echo "$TRACE_FILES" | wc -l)
+        echo "Found $TRACE_COUNT trace file(s) to upload"
+        
+        # Create a zip of all trace files if multiple
+        if [ $TRACE_COUNT -gt 1 ]; then
+          echo "Creating archive of all trace files..."
+          zip -r all-traces.zip $TRACE_FILES
+          UPLOAD_FILE="all-traces.zip"
+        else
+          UPLOAD_FILE="$TRACE_FILES"
+        fi
+        
+        # Step 1: Get presigned URL
+        echo "Getting presigned URL for trace upload..."
+        
+        PRESIGNED_API_URL="${{ inputs.ordino-url }}/api/v1/test-report-external/trace-log/presigned-url"
+        PROJECT_ID="${{ steps.load-credentials.outputs.project-id }}"
+        API_KEY="${{ steps.load-credentials.outputs.ordino-key }}"
+        BUILD_ID="${GITHUB_RUN_ID}"
+        
+        # Request presigned URL
+        PRESIGNED_RESPONSE=$(curl --location "$PRESIGNED_API_URL" \
+          --header "Ordino-Key: $API_KEY" \
+          --header "Content-Type: application/json" \
+          --data '{
+            "projectId": "'$PROJECT_ID'",
+            "executionId": "'$BUILD_ID'"
+          }' \
+          --silent)
+        
+        # Extract presigned URL and test report ID
+        PRESIGNED_URL=$(echo "$PRESIGNED_RESPONSE" | grep -o '"PresignedUrl":"[^"]*' | cut -d'"' -f4)
+        TEST_REPORT_ID=$(echo "$PRESIGNED_RESPONSE" | grep -o '"TestReportId":"[^"]*' | cut -d'"' -f4)
+        
+        if [ -z "$PRESIGNED_URL" ] || [ -z "$TEST_REPORT_ID" ]; then
+          echo "❌ Failed to get presigned URL"
+          echo "Response: $PRESIGNED_RESPONSE"
+          exit 1
+        fi
+        
+        echo "✅ Got presigned URL and TestReportId: $TEST_REPORT_ID"
+        
+        # Step 2: Upload trace file to presigned URL
+        echo "Uploading trace file..."
+        
+        UPLOAD_RESPONSE=$(curl --location "$PRESIGNED_URL" \
+          --request PUT \
+          --data-binary "@$UPLOAD_FILE" \
+          --write-out "%{http_code}" \
+          --silent \
+          --output /dev/null)
+        
+        # Step 3: Update status
+        STATUS_API_URL="${{ inputs.ordino-url }}/api/v1/test-report-external/trace-log/status"
+        
+        if [ "$UPLOAD_RESPONSE" -eq 200 ] || [ "$UPLOAD_RESPONSE" -eq 201 ]; then
+          echo "✅ Trace file uploaded successfully"
+          COMPLETED="true"
+        else
+          echo "❌ Failed to upload trace file. HTTP status: $UPLOAD_RESPONSE"
+          COMPLETED="false"
+        fi
+        
+        # Send status update
+        echo "Updating trace upload status..."
+        
+        STATUS_RESPONSE=$(curl --location "$STATUS_API_URL" \
+          --request PUT \
+          --header "Ordino-Key: $API_KEY" \
+          --header "Content-Type: application/json" \
+          --data '{
+            "TestReportId": "'$TEST_REPORT_ID'",
+            "Completed": '$COMPLETED'
+          }' \
+          --silent)
+        
+        # Check if status update was successful
+        IS_SUCCESS=$(echo "$STATUS_RESPONSE" | grep -o '"IsSuccess":true' || true)
+        
+        if [ -n "$IS_SUCCESS" ]; then
+          echo "✅ Trace upload status updated successfully"
+          echo "trace-upload-success=true" >> $GITHUB_OUTPUT
+        else
+          echo "⚠️ Failed to update trace upload status"
+          echo "Response: $STATUS_RESPONSE"
+          echo "trace-upload-success=false" >> $GITHUB_OUTPUT
+        fi
+        
+        # Clean up temporary archive if created
+        if [ -f "all-traces.zip" ]; then
+          rm all-traces.zip
+        fi 
     # Step 9: Summary
     - name: Generate Summary
       if: always()
