@@ -365,38 +365,45 @@ runs:
             echo "❌ No Cypress reports found to merge"
             exit 1
           fi
-        else
-          # Playwright: Use the existing merge-reports.js from the framework
-          echo "Merging Playwright reports..."
-          mkdir -p ordino-report/mochawesome
+       else
+          # Playwright: Use merge-report.js to merge test-results-final.json files
+          echo "Merging Playwright reports using merge-report.js..."
+          mkdir -p ordino-report
           
-          # Find and copy all mochawesome.json files
+          # Find and copy all test-results-final.json files from shards
           shard_count=0
-          for mochawesome_file in $(find ${{ inputs.reports-directory }} -name "mochawesome.json" -type f); do
+          
+          # Look for test-results-final.json in the reports directory structure
+          for final_json in $(find ${{ inputs.reports-directory }} -name "test-results-final.json" -type f); do
             shard_count=$((shard_count + 1))
-            cp "$mochawesome_file" "ordino-report/mochawesome/mochawesome-shard-$shard_count.json"
-            echo "✅ Copied report from shard $shard_count"
+            # Copy to ordino-report directory with shard naming
+            cp "$final_json" "ordino-report/test-results-final-shard-$shard_count.json"
+            echo "✅ Copied test-results-final.json from shard $shard_count"
           done
           
           if [ $shard_count -gt 0 ]; then
-            echo "🔄 Using merge-reports.js to merge $shard_count reports..."
+            echo "🔄 Using merge-report.js to merge $shard_count shard reports..."
             
-            if [ -f "merge-reports.js" ]; then
-              node merge-reports.js
+            # Check if merge-report.js exists
+            if [ -f "merge-report.js" ]; then
+              # Run merge-report.js to merge all shard files
+              node merge-report.js
               
-              if [ -f "ordino-report/mochawesome/mochawesome.json" ]; then
-                echo "✅ Successfully merged $shard_count reports"
-                echo "report-path=ordino-report/mochawesome/mochawesome.json" >> $GITHUB_OUTPUT
+              # Check if merged report was created
+              if [ -f "test-results-final.json" ]; then
+                echo "✅ Successfully merged $shard_count reports into test-results-final.json"
+                echo "report-path=test-results-final.json" >> $GITHUB_OUTPUT
               else
-                echo "❌ Failed to merge reports"
+                echo "❌ Failed to create merged test-results-final.json"
                 exit 1
               fi
             else
-              echo "❌ Error: merge-reports.js not found in repository!"
+              echo "❌ Error: merge-report.js not found in repository root!"
+              echo "Please ensure merge-report.js exists in your repository"
               exit 1
             fi
           else
-            echo "❌ No mochawesome.json files found for merge"
+            echo "❌ No test-results-final.json files found for merge"
             exit 1
           fi
         fi
@@ -427,11 +434,12 @@ runs:
             echo "report-path=" >> $GITHUB_OUTPUT
           fi
         else
-          # Playwright report handling
-          if [ -f "ordino-report/mochawesome/mochawesome.json" ]; then
-            echo "report-path=ordino-report/mochawesome/mochawesome.json" >> $GITHUB_OUTPUT
+          # Playwright report handling - use test-results-final.json from root
+          if [ -f "test-results-final.json" ]; then
+            echo "✅ Found test-results-final.json in root"
+            echo "report-path=test-results-final.json" >> $GITHUB_OUTPUT
           else
-            echo "No Playwright report found"
+            echo "❌ No test-results-final.json found in root"
             echo "report-path=" >> $GITHUB_OUTPUT
           fi
         fi
@@ -490,49 +498,180 @@ runs:
             exit 1
           fi
         fi
-# Step 9: Upload Trace Files (for Playwright only)
+# ==================================================================
+# MODIFIED Step 9: Upload Trace Files (for Playwright only)
+# Handles sharded traces, includes screenshots (.png), and excludes retry folders
+# ==================================================================
     - name: Upload Playwright Trace Files
       id: upload-traces
       if: ${{ inputs.test-framework == 'playwright' && inputs.skip-upload == 'false' && (inputs.action-mode == 'merge-and-upload' || inputs.total-shards == '1') }}
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
-        echo "📤 Checking for Playwright trace files..."
+        echo "📤 Checking for Playwright trace files and screenshots..."
         
-        # Find trace files
-        TRACE_DIR="test-results"
-        if [ ! -d "$TRACE_DIR" ]; then
-          TRACE_DIR="playwright-report"
-        fi
+        # Create temporary directory for collecting traces
+        TEMP_TRACE_DIR="temp-traces-collection"
+        mkdir -p "$TEMP_TRACE_DIR"
         
-        if [ ! -d "$TRACE_DIR" ]; then
-          echo "No trace directory found, skipping trace upload"
-          exit 0
-        fi
-        
-        # Find all trace.zip files
-        TRACE_FILES=$(find "$TRACE_DIR" -name "trace.zip" -type f 2>/dev/null || true)
-        
-        if [ -z "$TRACE_FILES" ]; then
-          echo "No trace files found, skipping trace upload"
-          exit 0
-        fi
-        
-        # Count trace files
-        TRACE_COUNT=$(echo "$TRACE_FILES" | wc -l)
-        echo "Found $TRACE_COUNT trace file(s) to upload"
-        
-        # Create a zip of all trace files if multiple
-        if [ $TRACE_COUNT -gt 1 ]; then
-          echo "Creating archive of all trace files..."
-          zip -r all-traces.zip $TRACE_FILES
-          UPLOAD_FILE="all-traces.zip"
+        if [[ "${{ inputs.action-mode }}" == "merge-and-upload" ]]; then
+          echo "🔍 Collecting trace files and screenshots from all shards..."
+          
+          # For merge mode, search in the reports directory from all shards
+          SEARCH_DIR="${{ inputs.reports-directory }}"
+          
+          if [ ! -d "$SEARCH_DIR" ]; then
+            echo "⚠️ Reports directory not found: $SEARCH_DIR"
+            echo "Skipping trace upload"
+            exit 0
+          fi
+          
+          # Find all trace-report directories, excluding retry folders
+          TRACE_DIRS=$(find "$SEARCH_DIR" -type d -name "trace-report" 2>/dev/null || true)
+          
+          if [ -z "$TRACE_DIRS" ]; then
+            echo "⚠️ No trace-report directories found"
+            echo "Skipping trace upload"
+            exit 0
+          fi
+          
+          TRACE_COUNT=0
+          
+          # Process each trace-report directory
+          while IFS= read -r trace_dir; do
+            echo "Processing: $trace_dir"
+            
+            # Find all subdirectories in trace-report (each test folder)
+            find "$trace_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while read -r test_folder; do
+              # Get the folder name
+              TEST_FOLDER_NAME=$(basename "$test_folder")
+              
+              # Check if this is a retry folder
+              if echo "$TEST_FOLDER_NAME" | grep -qE '(-retry-[0-9]+|retry[0-9]+)'; then
+                echo "  ⏭️  Skipping retry folder: $TEST_FOLDER_NAME"
+                continue
+              fi
+              
+              # This is a valid test folder, collect all files
+              TRACE_COUNT=$((TRACE_COUNT + 1))
+              
+              # Create a subdirectory for this test in temp collection
+              mkdir -p "$TEMP_TRACE_DIR/test-${TRACE_COUNT}-${TEST_FOLDER_NAME}"
+              
+              # Copy trace.zip if exists
+              if [ -f "$test_folder/trace.zip" ]; then
+                cp "$test_folder/trace.zip" "$TEMP_TRACE_DIR/test-${TRACE_COUNT}-${TEST_FOLDER_NAME}/trace.zip"
+                echo "  ✅ Collected trace.zip from: $TEST_FOLDER_NAME"
+              fi
+              
+              # Copy all .png files (screenshots)
+              PNG_FILES=$(find "$test_folder" -maxdepth 1 -name "*.png" -type f 2>/dev/null || true)
+              if [ -n "$PNG_FILES" ]; then
+                while IFS= read -r png_file; do
+                  PNG_NAME=$(basename "$png_file")
+                  cp "$png_file" "$TEMP_TRACE_DIR/test-${TRACE_COUNT}-${TEST_FOLDER_NAME}/$PNG_NAME"
+                  echo "  ✅ Collected screenshot: $PNG_NAME from $TEST_FOLDER_NAME"
+                done <<< "$PNG_FILES"
+              fi
+            done
+          done <<< "$TRACE_DIRS"
+          
+          # Count collected test folders
+          COLLECTED_COUNT=$(find "$TEMP_TRACE_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+          
+          if [ "$COLLECTED_COUNT" -eq 0 ]; then
+            echo "⚠️ No trace files collected after filtering retries"
+            echo "Skipping trace upload"
+            rm -rf "$TEMP_TRACE_DIR"
+            exit 0
+          fi
+          
+          echo "✅ Collected traces and screenshots from $COLLECTED_COUNT tests (excluding retries)"
+          
         else
-          UPLOAD_FILE="$TRACE_FILES"
+          echo "🔍 Collecting trace files and screenshots from single execution..."
+          
+          # For single execution, look in test-results or playwright-report
+          TRACE_DIR="trace-report"
+          if [ ! -d "$TRACE_DIR" ]; then
+            TRACE_DIR="test-results"
+          fi
+          if [ ! -d "$TRACE_DIR" ]; then
+            TRACE_DIR="playwright-report"
+          fi
+          
+          if [ ! -d "$TRACE_DIR" ]; then
+            echo "⚠️ No trace directory found"
+            echo "Skipping trace upload"
+            rm -rf "$TEMP_TRACE_DIR"
+            exit 0
+          fi
+          
+          TRACE_COUNT=0
+          
+          # Find all subdirectories in trace directory (each test folder)
+          find "$TRACE_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while read -r test_folder; do
+            # Get the folder name
+            TEST_FOLDER_NAME=$(basename "$test_folder")
+            
+            # Check if this is a retry folder
+            if echo "$TEST_FOLDER_NAME" | grep -qE '(-retry-[0-9]+|retry[0-9]+)'; then
+              echo "  ⏭️  Skipping retry folder: $TEST_FOLDER_NAME"
+              continue
+            fi
+            
+            # This is a valid test folder, collect all files
+            TRACE_COUNT=$((TRACE_COUNT + 1))
+            
+            # Create a subdirectory for this test in temp collection
+            mkdir -p "$TEMP_TRACE_DIR/test-${TRACE_COUNT}-${TEST_FOLDER_NAME}"
+            
+            # Copy trace.zip if exists
+            if [ -f "$test_folder/trace.zip" ]; then
+              cp "$test_folder/trace.zip" "$TEMP_TRACE_DIR/test-${TRACE_COUNT}-${TEST_FOLDER_NAME}/trace.zip"
+              echo "  ✅ Collected trace.zip from: $TEST_FOLDER_NAME"
+            fi
+            
+            # Copy all .png files (screenshots)
+            PNG_FILES=$(find "$test_folder" -maxdepth 1 -name "*.png" -type f 2>/dev/null || true)
+            if [ -n "$PNG_FILES" ]; then
+              while IFS= read -r png_file; do
+                PNG_NAME=$(basename "$png_file")
+                cp "$png_file" "$TEMP_TRACE_DIR/test-${TRACE_COUNT}-${TEST_FOLDER_NAME}/$PNG_NAME"
+                echo "  ✅ Collected screenshot: $PNG_NAME from $TEST_FOLDER_NAME"
+              done <<< "$PNG_FILES"
+            fi
+          done
+          
+          # Count collected test folders
+          COLLECTED_COUNT=$(find "$TEMP_TRACE_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+          
+          if [ "$COLLECTED_COUNT" -eq 0 ]; then
+            echo "⚠️ No trace files found after filtering retries"
+            echo "Skipping trace upload"
+            rm -rf "$TEMP_TRACE_DIR"
+            exit 0
+          fi
+          
+          echo "✅ Collected traces and screenshots from $COLLECTED_COUNT tests (excluding retries)"
         fi
+        
+        # Create single zip file from all collected traces and screenshots
+        echo "📦 Creating consolidated all-traces.zip..."
+        cd "$TEMP_TRACE_DIR"
+        zip -r ../all-traces.zip . -q
+        cd ..
+        
+        UPLOAD_FILE="all-traces.zip"
+        FILE_SIZE=$(du -h "$UPLOAD_FILE" | cut -f1)
+        echo "✅ Created $UPLOAD_FILE (Size: $FILE_SIZE)"
+        
+        # List contents for verification
+        echo "📋 Archive contents:"
+        unzip -l "$UPLOAD_FILE" | head -20
         
         # Step 1: Get presigned URL
-        echo "Getting presigned URL for trace upload..."
+        echo "🔗 Getting presigned URL for trace upload..."
         
         PRESIGNED_API_URL="${{ inputs.ordino-url }}/api/v1/test-report-external/trace-log/presigned-url"
         PROJECT_ID="${{ steps.load-credentials.outputs.project-id }}"
@@ -556,16 +695,18 @@ runs:
         if [ -z "$PRESIGNED_URL" ] || [ -z "$TEST_REPORT_ID" ]; then
           echo "❌ Failed to get presigned URL"
           echo "Response: $PRESIGNED_RESPONSE"
+          rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE"
           exit 1
         fi
         
         echo "✅ Got presigned URL and TestReportId: $TEST_REPORT_ID"
         
         # Step 2: Upload trace file to presigned URL
-        echo "Uploading trace file..."
+        echo "☁️ Uploading consolidated traces and screenshots to Ordino..."
         
         UPLOAD_RESPONSE=$(curl --location "$PRESIGNED_URL" \
           --request PUT \
+          --header "Content-Type: application/zip" \
           --data-binary "@$UPLOAD_FILE" \
           --write-out "%{http_code}" \
           --silent \
@@ -575,7 +716,7 @@ runs:
         STATUS_API_URL="${{ inputs.ordino-url }}/api/v1/test-report-external/trace-log/status"
         
         if [ "$UPLOAD_RESPONSE" -eq 200 ] || [ "$UPLOAD_RESPONSE" -eq 201 ]; then
-          echo "✅ Trace file uploaded successfully"
+          echo "✅ Trace file uploaded successfully (HTTP $UPLOAD_RESPONSE)"
           COMPLETED="true"
         else
           echo "❌ Failed to upload trace file. HTTP status: $UPLOAD_RESPONSE"
@@ -583,7 +724,7 @@ runs:
         fi
         
         # Send status update
-        echo "Updating trace upload status..."
+        echo "📊 Updating trace upload status..."
         
         STATUS_RESPONSE=$(curl --location "$STATUS_API_URL" \
           --request PUT \
@@ -607,10 +748,11 @@ runs:
           echo "trace-upload-success=false" >> $GITHUB_OUTPUT
         fi
         
-        # Clean up temporary archive if created
-        if [ -f "all-traces.zip" ]; then
-          rm all-traces.zip
-        fi 
+        # Clean up temporary files
+        echo "🧹 Cleaning up temporary files..."
+        rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE"
+        
+        echo "✨ Trace upload process completed!"
     # Step 9: Summary
     - name: Generate Summary
       if: always()
