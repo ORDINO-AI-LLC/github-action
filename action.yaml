@@ -683,26 +683,52 @@ runs:
         API_KEY="${{ steps.load-credentials.outputs.ordino-key }}"
         BUILD_ID="${GITHUB_RUN_ID}"
         
-        # Request presigned URL
-        PRESIGNED_RESPONSE=$(curl --location "$PRESIGNED_API_URL" \
+        echo "API URL: $PRESIGNED_API_URL"
+        echo "Project ID: $PROJECT_ID"
+        echo "Build ID: $BUILD_ID"
+        
+        # Request presigned URL with better error handling
+        HTTP_CODE=$(curl --location "$PRESIGNED_API_URL" \
           --header "Ordino-Key: $API_KEY" \
           --header "Content-Type: application/json" \
           --data '{
             "projectId": "'$PROJECT_ID'",
             "executionId": "'$BUILD_ID'"
           }' \
-          --silent)
+          --write-out "%{http_code}" \
+          --silent \
+          --output presigned-response.json)
+        
+        echo "Presigned URL request HTTP status: $HTTP_CODE"
+        
+        if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ]; then
+          echo "❌ Failed to get presigned URL. HTTP status: $HTTP_CODE"
+          echo "Response:"
+          cat presigned-response.json
+          rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE" presigned-response.json
+          
+          # Don't fail the entire workflow for trace upload issues
+          echo "⚠️ Trace upload failed, but continuing workflow..."
+          exit 0
+        fi
+        
+        PRESIGNED_RESPONSE=$(cat presigned-response.json)
         
         # Extract presigned URL and test report ID
         PRESIGNED_URL=$(echo "$PRESIGNED_RESPONSE" | grep -o '"PresignedUrl":"[^"]*' | cut -d'"' -f4)
         TEST_REPORT_ID=$(echo "$PRESIGNED_RESPONSE" | grep -o '"TestReportId":"[^"]*' | cut -d'"' -f4)
         
         if [ -z "$PRESIGNED_URL" ] || [ -z "$TEST_REPORT_ID" ]; then
-          echo "❌ Failed to get presigned URL"
+          echo "❌ Failed to extract presigned URL or TestReportId from response"
           echo "Response: $PRESIGNED_RESPONSE"
-          rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE"
-          exit 1
+          rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE" presigned-response.json
+          
+          # Don't fail the entire workflow for trace upload issues
+          echo "⚠️ Trace upload failed, but continuing workflow..."
+          exit 0
         fi
+        
+        rm -f presigned-response.json
         
         echo "✅ Got presigned URL and TestReportId: $TEST_REPORT_ID"
         
