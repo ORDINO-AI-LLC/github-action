@@ -513,6 +513,7 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
+        set -e  # Exit on error
         echo "📤 Checking for Playwright trace files and screenshots..."
         
         # Create temporary directory for collecting traces
@@ -715,13 +716,23 @@ runs:
         fi
         
         # Extract presigned URL and test report ID
-        PRESIGNED_URL=$(cat presigned-response.json | grep -o '"PresignedUrl":"[^"]*' | cut -d'"' -f4)
-        TEST_REPORT_ID=$(cat presigned-response.json | grep -o '"TestReportId":"[^"]*' | cut -d'"' -f4)
+        echo "📋 Extracting presigned URL and TestReportId from response..."
+        echo "Response content:"
+        cat presigned-response.json
+        echo ""
+        
+        # Extract using camelCase (as returned by API) with fallback to PascalCase
+        PRESIGNED_URL=$(cat presigned-response.json | grep -oE '"presignedUrl"\s*:\s*"[^"]*"' | cut -d'"' -f4 || cat presigned-response.json | grep -oE '"PresignedUrl"\s*:\s*"[^"]*"' | cut -d'"' -f4 || cat presigned-response.json | grep -o '"presignedUrl":"[^"]*' | cut -d'"' -f4 || echo "")
+        TEST_REPORT_ID=$(cat presigned-response.json | grep -oE '"testReportId"\s*:\s*"[^"]*"' | cut -d'"' -f4 || cat presigned-response.json | grep -oE '"TestReportId"\s*:\s*"[^"]*"' | cut -d'"' -f4 || cat presigned-response.json | grep -o '"testReportId":"[^"]*' | cut -d'"' -f4 || echo "")
+        
+        # Debug output
+        echo "Extracted PRESIGNED_URL length: ${#PRESIGNED_URL}"
+        echo "Extracted TEST_REPORT_ID: $TEST_REPORT_ID"
         
         if [ -z "$PRESIGNED_URL" ] || [ -z "$TEST_REPORT_ID" ]; then
           echo "❌ Failed to extract presigned URL or TestReportId"
-          echo "Response:"
-          cat presigned-response.json
+          echo "PRESIGNED_URL: '$PRESIGNED_URL'"
+          echo "TEST_REPORT_ID: '$TEST_REPORT_ID'"
           echo "⚠️ Trace upload failed, but continuing workflow..."
           rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE" presigned-response.json
           exit 0
@@ -735,7 +746,15 @@ runs:
         echo "File size: $(du -h "$UPLOAD_FILE" | cut -f1)"
         echo "Presigned URL (first 100 chars): ${PRESIGNED_URL:0:100}..."
         
+        # Verify file exists before upload
+        if [ ! -f "$UPLOAD_FILE" ]; then
+          echo "❌ Error: Upload file not found: $UPLOAD_FILE"
+          echo "⚠️ Trace upload failed, but continuing workflow..."
+          rm -rf "$TEMP_TRACE_DIR" presigned-response.json 2>/dev/null || true
+          exit 0
+        fi
         
+        # Perform upload with error handling
         UPLOAD_RESPONSE=$(curl --location "$PRESIGNED_URL" \
           --request PUT \
           --header "Content-Type: application/zip" \
@@ -743,15 +762,20 @@ runs:
           --write-out "\n{\"http_code\":\"%{http_code}\",\"size_upload\":\"%{size_upload}\",\"speed_upload\":\"%{speed_upload}\",\"time_total\":\"%{time_total}\"}" \
           --silent \
           --show-error \
-          --output upload-response.txt 2>&1)
+          --output upload-response.txt 2>&1) || UPLOAD_ERROR=$?
+        
+        if [ -n "$UPLOAD_ERROR" ]; then
+          echo "⚠️ Curl upload command returned error code: $UPLOAD_ERROR"
+          echo "This may be normal if the upload succeeded but curl had a warning"
+        fi
         
         echo "Upload Response Details:"
         echo "$UPLOAD_RESPONSE"
         
         # Extract HTTP code from the response
-        HTTP_UPLOAD_CODE=$(echo "$UPLOAD_RESPONSE" | grep -o '"http_code":"[^"]*' | cut -d'"' -f4)
+        HTTP_UPLOAD_CODE=$(echo "$UPLOAD_RESPONSE" | grep -oE '"http_code"\s*:\s*"[^"]*"' | cut -d'"' -f4 || echo "$UPLOAD_RESPONSE" | grep -o '"http_code":"[^"]*' | cut -d'"' -f4 || echo "")
         
-        echo "HTTP Upload Status Code: $HTTP_UPLOAD_CODE"
+        echo "HTTP Upload Status Code: '$HTTP_UPLOAD_CODE'"
         
         if [ -f upload-response.txt ]; then
           echo "Upload response body:"
@@ -762,8 +786,12 @@ runs:
         # Step 3: Update status
         STATUS_API_URL="${{ inputs.ordino-url }}/api/v1/test-report-external/trace-log/status"
         
-        # FIX: Use HTTP_UPLOAD_CODE instead of UPLOAD_RESPONSE
-        if [ "$HTTP_UPLOAD_CODE" = "200" ] || [ "$HTTP_UPLOAD_CODE" = "201" ]; then
+        # Check upload status - handle empty HTTP_UPLOAD_CODE
+        if [ -z "$HTTP_UPLOAD_CODE" ]; then
+          echo "⚠️ Warning: Could not extract HTTP status code from upload response"
+          echo "Upload response was: $UPLOAD_RESPONSE"
+          COMPLETED="false"
+        elif [ "$HTTP_UPLOAD_CODE" = "200" ] || [ "$HTTP_UPLOAD_CODE" = "201" ]; then
           echo "✅ Trace file uploaded successfully (HTTP $HTTP_UPLOAD_CODE)"
           COMPLETED="true"
         else
@@ -771,34 +799,58 @@ runs:
           COMPLETED="false"
         fi
         
-        # Send status update
-        echo "📊 Updating trace upload status..."
-        
-        STATUS_RESPONSE=$(curl --location "$STATUS_API_URL" \
-          --request PUT \
-          --header "Ordino-Key: $API_KEY" \
-          --header "Content-Type: application/json" \
-          --data '{
-            "TestReportId": "'$TEST_REPORT_ID'",
-            "Completed": '$COMPLETED'
-          }' \
-          --silent)
-        
-        # Check if status update was successful
-        IS_SUCCESS=$(echo "$STATUS_RESPONSE" | grep -o '"IsSuccess":true' || true)
-        
-        if [ -n "$IS_SUCCESS" ]; then
-          echo "✅ Trace upload status updated successfully"
-          echo "trace-upload-success=true" >> $GITHUB_OUTPUT
+        # Send status update (only if we have a valid TEST_REPORT_ID)
+        if [ -n "$TEST_REPORT_ID" ]; then
+          echo "📊 Updating trace upload status..."
+          
+          STATUS_RESPONSE=$(curl --location "$STATUS_API_URL" \
+            --request PUT \
+            --header "Ordino-Key: $API_KEY" \
+            --header "Content-Type: application/json" \
+            --data '{
+              "TestReportId": "'$TEST_REPORT_ID'",
+              "Completed": '$COMPLETED'
+            }' \
+            --write-out "%{http_code}" \
+            --silent \
+            --output status-response.json)
+          
+          STATUS_HTTP_CODE=$STATUS_RESPONSE
+          echo "Status update HTTP code: $STATUS_HTTP_CODE"
+          
+          if [ -f status-response.json ]; then
+            echo "Status update response:"
+            cat status-response.json
+          fi
+          
+          # Check if status update was successful
+          if [ "$STATUS_HTTP_CODE" = "200" ] || [ "$STATUS_HTTP_CODE" = "201" ]; then
+            IS_SUCCESS=$(cat status-response.json 2>/dev/null | grep -oE '"IsSuccess"\s*:\s*true' || echo "")
+            if [ -n "$IS_SUCCESS" ]; then
+              echo "✅ Trace upload status updated successfully"
+              echo "trace-upload-success=true" >> $GITHUB_OUTPUT
+            else
+              echo "⚠️ Status update returned success but IsSuccess not found in response"
+              echo "trace-upload-success=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "⚠️ Failed to update trace upload status. HTTP code: $STATUS_HTTP_CODE"
+            if [ -f status-response.json ]; then
+              echo "Response:"
+              cat status-response.json
+            fi
+            echo "trace-upload-success=false" >> $GITHUB_OUTPUT
+          fi
+          
+          rm -f status-response.json
         else
-          echo "⚠️ Failed to update trace upload status"
-          echo "Response: $STATUS_RESPONSE"
+          echo "⚠️ Skipping status update - no TestReportId available"
           echo "trace-upload-success=false" >> $GITHUB_OUTPUT
         fi
         
         # Clean up temporary files
         echo "🧹 Cleaning up temporary files..."
-        rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE"
+        rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE" presigned-response.json status-response.json upload-response.txt 2>/dev/null || true
         
         echo "✨ Trace upload process completed!"
     
