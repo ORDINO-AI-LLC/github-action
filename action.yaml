@@ -719,13 +719,15 @@ runs:
         echo "Response content:"
         cat presigned-response.json
         
-        # Try to extract fields using grep
-        PRESIGNED_URL=$(echo "$PRESIGNED_RESPONSE" | grep -oP '"PresignedUrl"\s*:\s*"\K[^"]+' 2>/dev/null || echo "$PRESIGNED_RESPONSE" | grep -o '"PresignedUrl":"[^"]*' | cut -d'"' -f4)
-        TEST_REPORT_ID=$(echo "$PRESIGNED_RESPONSE" | grep -oP '"TestReportId"\s*:\s*"\K[^"]+' 2>/dev/null || echo "$PRESIGNED_RESPONSE" | grep -o '"TestReportId":"[^"]*' | cut -d'"' -f4)
+        # Simple extraction using sed - works with escaped JSON
+        PRESIGNED_URL=$(cat presigned-response.json | sed -n 's/.*"PresignedUrl":"\([^"]*\)".*/\1/p' | sed 's/\\//g')
+        TEST_REPORT_ID=$(cat presigned-response.json | sed -n 's/.*"TestReportId":"\([^"]*\)".*/\1/p')
         
-        echo "Checking extracted values..."
-        echo "PresignedUrl extracted: $([ -n "$PRESIGNED_URL" ] && echo 'YES' || echo 'NO')"
-        echo "TestReportId extracted: $([ -n "$TEST_REPORT_ID" ] && echo 'YES' || echo 'NO')"
+        echo ""
+        echo "Extracted values:"
+        echo "- PresignedUrl length: ${#PRESIGNED_URL} characters"
+        echo "- PresignedUrl (first 80 chars): ${PRESIGNED_URL:0:80}..."
+        echo "- TestReportId: $TEST_REPORT_ID"
         
         # Only exit if both are empty
         if [ -z "$PRESIGNED_URL" ] && [ -z "$TEST_REPORT_ID" ]; then
