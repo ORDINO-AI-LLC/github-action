@@ -788,15 +788,21 @@ runs:
         
         # Check upload status - handle empty HTTP_UPLOAD_CODE
         if [ -z "$HTTP_UPLOAD_CODE" ]; then
-          echo "⚠️ Warning: Could not extract HTTP status code from upload response"
+          echo "❌ Error: Could not extract HTTP status code from upload response"
           echo "Upload response was: $UPLOAD_RESPONSE"
           COMPLETED="false"
+          echo "❌ Trace upload failed - exiting with error"
+          rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE" presigned-response.json 2>/dev/null || true
+          exit 1
         elif [ "$HTTP_UPLOAD_CODE" = "200" ] || [ "$HTTP_UPLOAD_CODE" = "201" ]; then
           echo "✅ Trace file uploaded successfully (HTTP $HTTP_UPLOAD_CODE)"
           COMPLETED="true"
         else
           echo "❌ Failed to upload trace file. HTTP status: $HTTP_UPLOAD_CODE"
           COMPLETED="false"
+          echo "❌ Trace upload failed - exiting with error"
+          rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE" presigned-response.json 2>/dev/null || true
+          exit 1
         fi
         
         # Send status update (only if we have a valid TEST_REPORT_ID)
@@ -825,12 +831,13 @@ runs:
           
           # Check if status update was successful
           if [ "$STATUS_HTTP_CODE" = "200" ] || [ "$STATUS_HTTP_CODE" = "201" ]; then
-            IS_SUCCESS=$(cat status-response.json 2>/dev/null | grep -oE '"IsSuccess"\s*:\s*true' || echo "")
+            # Check for camelCase (API format) with fallback to PascalCase
+            IS_SUCCESS=$(cat status-response.json 2>/dev/null | grep -oE '"isSuccess"\s*:\s*true' || cat status-response.json 2>/dev/null | grep -oE '"IsSuccess"\s*:\s*true' || echo "")
             if [ -n "$IS_SUCCESS" ]; then
               echo "✅ Trace upload status updated successfully"
               echo "trace-upload-success=true" >> $GITHUB_OUTPUT
             else
-              echo "⚠️ Status update returned success but IsSuccess not found in response"
+              echo "⚠️ Status update returned success but isSuccess not found in response"
               echo "trace-upload-success=false" >> $GITHUB_OUTPUT
             fi
           else
