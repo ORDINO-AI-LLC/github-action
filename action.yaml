@@ -388,12 +388,12 @@ runs:
           done
           
           if [ $shard_count -gt 0 ]; then
-            echo "🔄 Using merge-report.js to merge $shard_count shard reports..."
+            echo "🔄 Using merge-reports.js to merge $shard_count shard reports..."
             
-            # Check if merge-report.js exists
-            if [ -f "merge-report.js" ]; then
-              # Run merge-report.js to merge all shard files
-              node merge-report.js
+            # Check if merge-reports.js exists
+            if [ -f "merge-reports.js" ]; then
+              # Run merge-reports.js to merge all shard files
+              node merge-reports.js
               
               # Check if merged report was created
               if [ -f "test-results-final.json" ]; then
@@ -404,8 +404,8 @@ runs:
                 exit 1
               fi
             else
-              echo "❌ Error: merge-report.js not found in repository root!"
-              echo "Please ensure merge-report.js exists in your repository"
+              echo "❌ Error: merge-reports.js not found in repository root!"
+              echo "Please ensure merge-reports.js exists in your repository"
               exit 1
             fi
           else
