@@ -708,10 +708,10 @@ runs:
           rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE" presigned-response.json
           
           # Don't fail the entire workflow for trace upload issues
-          echo "⚠️ Trace upload failed, 
+          echo "⚠️ Trace upload failed," 
         
         else
-        echo "✅ Presigned URL request successful"
+          echo "✅ Presigned URL request successful"
         fi
         
         # Extract presigned URL and test report ID
@@ -725,14 +725,14 @@ runs:
           rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE"
           
        else
-        
         echo "✅ Got presigned URL and TestReportId: $TEST_REPORT_ID"
+       fi
         # Step 2: Upload trace file to presigned URL
-        echo "☁️ Uploading consolidated traces and screenshots to Ordino..."
-        echo "Upload file: $UPLOAD_FILE"
-        echo "File size: $(du -h "$UPLOAD_FILE" | cut -f1)"
-        echo "Presigned URL (first 100 chars): ${PRESIGNED_URL:0:100}..."
-        fi
+          echo "☁️ Uploading consolidated traces and screenshots to Ordino..."
+          echo "Upload file: $UPLOAD_FILE"
+          echo "File size: $(du -h "$UPLOAD_FILE" | cut -f1)"
+          echo "Presigned URL (first 100 chars): ${PRESIGNED_URL:0:100}..."
+        
         
         UPLOAD_RESPONSE=$(curl --location "$PRESIGNED_URL" \
           --request PUT \
