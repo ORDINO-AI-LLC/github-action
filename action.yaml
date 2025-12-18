@@ -687,66 +687,27 @@ runs:
         echo "Project ID: $PROJECT_ID"
         echo "Build ID: $BUILD_ID"
         
-        # Request presigned URL with better error handling
-        HTTP_CODE=$(curl --location "$PRESIGNED_API_URL" \
+        # Request presigned URL
+        PRESIGNED_RESPONSE=$(curl --location "$PRESIGNED_API_URL" \
           --header "Ordino-Key: $API_KEY" \
           --header "Content-Type: application/json" \
           --data '{
             "projectId": "'$PROJECT_ID'",
             "executionId": "'$BUILD_ID'"
           }' \
-          --write-out "%{http_code}" \
-          --silent \
-          --output presigned-response.json)
+          --silent)
         
-        echo "Presigned URL request HTTP status: $HTTP_CODE"
+        # Extract presigned URL and test report ID
+        PRESIGNED_URL=$(echo "$PRESIGNED_RESPONSE" | grep -o '"PresignedUrl":"[^"]*' | cut -d'"' -f4)
+        TEST_REPORT_ID=$(echo "$PRESIGNED_RESPONSE" | grep -o '"TestReportId":"[^"]*' | cut -d'"' -f4)
         
-        if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ]; then
-          echo "❌ Failed to get presigned URL. HTTP status: $HTTP_CODE"
-          echo "Response:"
-          cat presigned-response.json
-          rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE" presigned-response.json
-          
-          # Don't fail the entire workflow for trace upload issues
+        if [ -z "$PRESIGNED_URL" ] || [ -z "$TEST_REPORT_ID" ]; then
+          echo "❌ Failed to get presigned URL"
+          echo "Response: $PRESIGNED_RESPONSE"
           echo "⚠️ Trace upload failed, but continuing workflow..."
+          rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE"
           exit 0
         fi
-        
-        echo "✅ Presigned URL request successful"
-        
-        # Read and display the response
-        PRESIGNED_RESPONSE=$(cat presigned-response.json)
-        echo "Response content:"
-        cat presigned-response.json
-        
-        # Simple extraction using sed - works with escaped JSON
-        PRESIGNED_URL=$(cat presigned-response.json | sed -n 's/.*"PresignedUrl":"\([^"]*\)".*/\1/p' | sed 's/\\//g')
-        TEST_REPORT_ID=$(cat presigned-response.json | sed -n 's/.*"TestReportId":"\([^"]*\)".*/\1/p')
-        
-        echo ""
-        echo "Extracted values:"
-        echo "- PresignedUrl length: ${#PRESIGNED_URL} characters"
-        echo "- PresignedUrl (first 80 chars): ${PRESIGNED_URL:0:80}..."
-        echo "- TestReportId: $TEST_REPORT_ID"
-        
-        # Only exit if both are empty
-        if [ -z "$PRESIGNED_URL" ] && [ -z "$TEST_REPORT_ID" ]; then
-          echo "❌ Could not extract any fields from response"
-          rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE" presigned-response.json
-          echo "⚠️ Trace upload failed, but continuing workflow..."
-          exit 0
-        fi
-        
-        if [ -z "$PRESIGNED_URL" ]; then
-          echo "⚠️ Warning: PresignedUrl is empty, but continuing..."
-        fi
-        
-        if [ -z "$TEST_REPORT_ID" ]; then
-          echo "⚠️ Warning: TestReportId is empty, but continuing..."
-        fi
-        
-        rm -f presigned-response.json
-        echo "Proceeding to upload..."
         
         echo "✅ Got presigned URL and TestReportId: $TEST_REPORT_ID"
         # Step 2: Upload trace file to presigned URL
@@ -754,6 +715,7 @@ runs:
         echo "Upload file: $UPLOAD_FILE"
         echo "File size: $(du -h "$UPLOAD_FILE" | cut -f1)"
         echo "Presigned URL (first 100 chars): ${PRESIGNED_URL:0:100}..."
+        
         UPLOAD_RESPONSE=$(curl --location "$PRESIGNED_URL" \
           --request PUT \
           --header "Content-Type: application/zip" \
@@ -762,6 +724,7 @@ runs:
           --silent \
           --show-error \
           --output upload-response.txt 2>&1)
+        
         echo "Upload Response Details:"
         echo "$UPLOAD_RESPONSE"
         
@@ -775,14 +738,16 @@ runs:
           cat upload-response.txt
           rm -f upload-response.txt
         fi
+        
         # Step 3: Update status
         STATUS_API_URL="${{ inputs.ordino-url }}/api/v1/test-report-external/trace-log/status"
         
-        if [ "$UPLOAD_RESPONSE" -eq 200 ] || [ "$UPLOAD_RESPONSE" -eq 201 ]; then
-          echo "✅ Trace file uploaded successfully (HTTP $UPLOAD_RESPONSE)"
+        # FIX: Use HTTP_UPLOAD_CODE instead of UPLOAD_RESPONSE
+        if [ "$HTTP_UPLOAD_CODE" = "200" ] || [ "$HTTP_UPLOAD_CODE" = "201" ]; then
+          echo "✅ Trace file uploaded successfully (HTTP $HTTP_UPLOAD_CODE)"
           COMPLETED="true"
         else
-          echo "❌ Failed to upload trace file. HTTP status: $UPLOAD_RESPONSE"
+          echo "❌ Failed to upload trace file. HTTP status: $HTTP_UPLOAD_CODE"
           COMPLETED="false"
         fi
         
