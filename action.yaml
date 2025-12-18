@@ -300,7 +300,6 @@ runs:
           fi
         else
           echo "Running Playwright tests..."
-          mkdir -p ordino-report/mochawesome
           
           # Run with Playwright sharding if needed
           if [[ "${{ inputs.total-shards }}" -gt "1" ]]; then
@@ -322,6 +321,13 @@ runs:
               TEST_EXIT_CODE=$?
               echo "⚠️ Tests completed with exit code: $TEST_EXIT_CODE"
             fi
+          fi
+          
+          # Verify test-results-final.json exists
+          if [ -f "test-results-final.json" ]; then
+            echo "✅ Found test-results-final.json in root"
+          else
+            echo "⚠️ Warning: test-results-final.json not found in root"
           fi
         fi
         
@@ -365,7 +371,7 @@ runs:
             echo "❌ No Cypress reports found to merge"
             exit 1
           fi
-       else
+        else
           # Playwright: Use merge-report.js to merge test-results-final.json files
           echo "Merging Playwright reports using merge-report.js..."
           mkdir -p ordino-report
@@ -498,10 +504,8 @@ runs:
             exit 1
           fi
         fi
-# ==================================================================
-# MODIFIED Step 9: Upload Trace Files (for Playwright only)
-# Handles sharded traces, includes screenshots (.png), and excludes retry folders
-# ==================================================================
+    
+    # Step 9: Upload Trace Files (for Playwright only)
     - name: Upload Playwright Trace Files
       id: upload-traces
       if: ${{ inputs.test-framework == 'playwright' && inputs.skip-upload == 'false' && (inputs.action-mode == 'merge-and-upload' || inputs.total-shards == '1') }}
@@ -753,7 +757,8 @@ runs:
         rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE"
         
         echo "✨ Trace upload process completed!"
-    # Step 9: Summary
+    
+    # Step 10: Summary
     - name: Generate Summary
       if: always()
       shell: bash
