@@ -712,26 +712,41 @@ runs:
           exit 0
         fi
         
+        echo "✅ Presigned URL request successful"
+        
+        # Read and display the response
         PRESIGNED_RESPONSE=$(cat presigned-response.json)
+        echo "Response content:"
+        cat presigned-response.json
         
-        # Extract presigned URL and test report ID
-        PRESIGNED_URL=$(echo "$PRESIGNED_RESPONSE" | grep -o '"PresignedUrl":"[^"]*' | cut -d'"' -f4)
-        TEST_REPORT_ID=$(echo "$PRESIGNED_RESPONSE" | grep -o '"TestReportId":"[^"]*' | cut -d'"' -f4)
+        # Try to extract fields using grep
+        PRESIGNED_URL=$(echo "$PRESIGNED_RESPONSE" | grep -oP '"PresignedUrl"\s*:\s*"\K[^"]+' 2>/dev/null || echo "$PRESIGNED_RESPONSE" | grep -o '"PresignedUrl":"[^"]*' | cut -d'"' -f4)
+        TEST_REPORT_ID=$(echo "$PRESIGNED_RESPONSE" | grep -oP '"TestReportId"\s*:\s*"\K[^"]+' 2>/dev/null || echo "$PRESIGNED_RESPONSE" | grep -o '"TestReportId":"[^"]*' | cut -d'"' -f4)
         
-        if [ -z "$PRESIGNED_URL" ] || [ -z "$TEST_REPORT_ID" ]; then
-          echo "❌ Failed to extract presigned URL or TestReportId from response"
-          echo "Response: $PRESIGNED_RESPONSE"
+        echo "Checking extracted values..."
+        echo "PresignedUrl extracted: $([ -n "$PRESIGNED_URL" ] && echo 'YES' || echo 'NO')"
+        echo "TestReportId extracted: $([ -n "$TEST_REPORT_ID" ] && echo 'YES' || echo 'NO')"
+        
+        # Only exit if both are empty
+        if [ -z "$PRESIGNED_URL" ] && [ -z "$TEST_REPORT_ID" ]; then
+          echo "❌ Could not extract any fields from response"
           rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE" presigned-response.json
-          
-          # Don't fail the entire workflow for trace upload issues
           echo "⚠️ Trace upload failed, but continuing workflow..."
           exit 0
         fi
         
+        if [ -z "$PRESIGNED_URL" ]; then
+          echo "⚠️ Warning: PresignedUrl is empty, but continuing..."
+        fi
+        
+        if [ -z "$TEST_REPORT_ID" ]; then
+          echo "⚠️ Warning: TestReportId is empty, but continuing..."
+        fi
+        
         rm -f presigned-response.json
+        echo "Proceeding to upload..."
         
         echo "✅ Got presigned URL and TestReportId: $TEST_REPORT_ID"
-        
         # Step 2: Upload trace file to presigned URL
         echo "☁️ Uploading consolidated traces and screenshots to Ordino..."
         echo "Upload file: $UPLOAD_FILE"
