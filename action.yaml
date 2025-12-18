@@ -392,8 +392,9 @@ runs:
             
             # Check if merge-reports.js exists
             if [ -f "merge-reports.js" ]; then
-              # Run merge-reports.js to merge all shard files
-              node merge-reports.js
+              # Run merge-reports.js with input directory and output file
+              echo "Running: node merge-reports.js ordino-report test-results-final.json"
+              node merge-reports.js ordino-report test-results-final.json
               
               # Check if merged report was created
               if [ -f "test-results-final.json" ]; then
