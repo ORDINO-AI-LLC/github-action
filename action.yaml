@@ -708,30 +708,32 @@ runs:
           rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE" presigned-response.json
           
           # Don't fail the entire workflow for trace upload issues
-          echo "⚠️ Trace upload failed," 
-        
+          echo "⚠️ Trace upload failed, but continuing workflow..."
+          exit 0
         else
           echo "✅ Presigned URL request successful"
         fi
         
         # Extract presigned URL and test report ID
-        PRESIGNED_URL=$(echo "$PRESIGNED_RESPONSE" | grep -o '"PresignedUrl":"[^"]*' | cut -d'"' -f4)
-        TEST_REPORT_ID=$(echo "$PRESIGNED_RESPONSE" | grep -o '"TestReportId":"[^"]*' | cut -d'"' -f4)
+        PRESIGNED_URL=$(cat presigned-response.json | grep -o '"PresignedUrl":"[^"]*' | cut -d'"' -f4)
+        TEST_REPORT_ID=$(cat presigned-response.json | grep -o '"TestReportId":"[^"]*' | cut -d'"' -f4)
         
         if [ -z "$PRESIGNED_URL" ] || [ -z "$TEST_REPORT_ID" ]; then
-          echo "❌ Failed to get presigned URL"
-          echo "Response: $PRESIGNED_RESPONSE"
+          echo "❌ Failed to extract presigned URL or TestReportId"
+          echo "Response:"
+          cat presigned-response.json
           echo "⚠️ Trace upload failed, but continuing workflow..."
-          rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE"
-          
-       else
-        echo "✅ Got presigned URL and TestReportId: $TEST_REPORT_ID"
-       fi
+          rm -rf "$TEMP_TRACE_DIR" "$UPLOAD_FILE" presigned-response.json
+          exit 0
+        else
+          echo "✅ Got presigned URL and TestReportId: $TEST_REPORT_ID"
+        fi
+        
         # Step 2: Upload trace file to presigned URL
-          echo "☁️ Uploading consolidated traces and screenshots to Ordino..."
-          echo "Upload file: $UPLOAD_FILE"
-          echo "File size: $(du -h "$UPLOAD_FILE" | cut -f1)"
-          echo "Presigned URL (first 100 chars): ${PRESIGNED_URL:0:100}..."
+        echo "☁️ Uploading consolidated traces and screenshots to Ordino..."
+        echo "Upload file: $UPLOAD_FILE"
+        echo "File size: $(du -h "$UPLOAD_FILE" | cut -f1)"
+        echo "Presigned URL (first 100 chars): ${PRESIGNED_URL:0:100}..."
         
         
         UPLOAD_RESPONSE=$(curl --location "$PRESIGNED_URL" \
