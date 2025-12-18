@@ -734,15 +734,30 @@ runs:
         
         # Step 2: Upload trace file to presigned URL
         echo "☁️ Uploading consolidated traces and screenshots to Ordino..."
-        
+        echo "Upload file: $UPLOAD_FILE"
+        echo "File size: $(du -h "$UPLOAD_FILE" | cut -f1)"
+        echo "Presigned URL (first 100 chars): ${PRESIGNED_URL:0:100}..."
         UPLOAD_RESPONSE=$(curl --location "$PRESIGNED_URL" \
           --request PUT \
           --header "Content-Type: application/zip" \
           --data-binary "@$UPLOAD_FILE" \
-          --write-out "%{http_code}" \
+          --write-out "\n{\"http_code\":\"%{http_code}\",\"size_upload\":\"%{size_upload}\",\"speed_upload\":\"%{speed_upload}\",\"time_total\":\"%{time_total}\"}" \
           --silent \
-          --output /dev/null)
+          --show-error \
+          --output upload-response.txt 2>&1)
+        echo "Upload Response Details:"
+        echo "$UPLOAD_RESPONSE"
         
+        # Extract HTTP code from the response
+        HTTP_UPLOAD_CODE=$(echo "$UPLOAD_RESPONSE" | grep -o '"http_code":"[^"]*' | cut -d'"' -f4)
+        
+        echo "HTTP Upload Status Code: $HTTP_UPLOAD_CODE"
+        
+        if [ -f upload-response.txt ]; then
+          echo "Upload response body:"
+          cat upload-response.txt
+          rm -f upload-response.txt
+        fi
         # Step 3: Update status
         STATUS_API_URL="${{ inputs.ordino-url }}/api/v1/test-report-external/trace-log/status"
         
