@@ -562,11 +562,11 @@ runs:
               TRACE_COUNT=$((TRACE_COUNT + 1))
               
               # Create a subdirectory for this test in temp collection
-              mkdir -p "$TEMP_TRACE_DIR/test-${TRACE_COUNT}-${TEST_FOLDER_NAME}"
+              mkdir -p "$TEMP_TRACE_DIR/${TEST_FOLDER_NAME}"
               
               # Copy trace.zip if exists
               if [ -f "$test_folder/trace.zip" ]; then
-                cp "$test_folder/trace.zip" "$TEMP_TRACE_DIR/test-${TRACE_COUNT}-${TEST_FOLDER_NAME}/trace.zip"
+                cp "$test_folder/trace.zip" "$TEMP_TRACE_DIR/${TEST_FOLDER_NAME}/trace.zip"
                 echo "  ✅ Collected trace.zip from: $TEST_FOLDER_NAME"
               fi
               
@@ -575,7 +575,7 @@ runs:
               if [ -n "$PNG_FILES" ]; then
                 while IFS= read -r png_file; do
                   PNG_NAME=$(basename "$png_file")
-                  cp "$png_file" "$TEMP_TRACE_DIR/test-${TRACE_COUNT}-${TEST_FOLDER_NAME}/$PNG_NAME"
+                  cp "$png_file" "$TEMP_TRACE_DIR/${TEST_FOLDER_NAME}/$PNG_NAME"
                   echo "  ✅ Collected screenshot: $PNG_NAME from $TEST_FOLDER_NAME"
                 done <<< "$PNG_FILES"
               fi
@@ -630,11 +630,11 @@ runs:
             TRACE_COUNT=$((TRACE_COUNT + 1))
             
             # Create a subdirectory for this test in temp collection
-            mkdir -p "$TEMP_TRACE_DIR/test-${TRACE_COUNT}-${TEST_FOLDER_NAME}"
+            mkdir -p "$TEMP_TRACE_DIR/${TEST_FOLDER_NAME}"
             
             # Copy trace.zip if exists
             if [ -f "$test_folder/trace.zip" ]; then
-              cp "$test_folder/trace.zip" "$TEMP_TRACE_DIR/test-${TRACE_COUNT}-${TEST_FOLDER_NAME}/trace.zip"
+              cp "$test_folder/trace.zip" "$TEMP_TRACE_DIR/${TEST_FOLDER_NAME}/trace.zip"
               echo "  ✅ Collected trace.zip from: $TEST_FOLDER_NAME"
             fi
             
@@ -643,7 +643,7 @@ runs:
             if [ -n "$PNG_FILES" ]; then
               while IFS= read -r png_file; do
                 PNG_NAME=$(basename "$png_file")
-                cp "$png_file" "$TEMP_TRACE_DIR/test-${TRACE_COUNT}-${TEST_FOLDER_NAME}/$PNG_NAME"
+                cp "$png_file" "$TEMP_TRACE_DIR/${TEST_FOLDER_NAME}/$PNG_NAME"
                 echo "  ✅ Collected screenshot: $PNG_NAME from $TEST_FOLDER_NAME"
               done <<< "$PNG_FILES"
             fi
