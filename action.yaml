@@ -808,7 +808,8 @@ runs:
         # Send status update (only if we have a valid TEST_REPORT_ID)
         if [ -n "$TEST_REPORT_ID" ]; then
           echo "📊 Updating trace upload status..."
-          
+          echo "⏳ Waiting 10 seconds for S3 upload to be fully processed..."
+          sleep 10
           STATUS_RESPONSE=$(curl --location "$STATUS_API_URL" \
             --request PUT \
             --header "Ordino-Key: $API_KEY" \
